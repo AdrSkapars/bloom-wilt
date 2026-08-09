@@ -54,10 +54,27 @@ plt.rcParams.update({"font.size": 12})
 fig, ax = plt.subplots(figsize=(6.2, 4.8), dpi=160)
 allp = [t[0] for k in lines for t in lines[k]]
 ylo = min(t[1] - t[3] for k in lines for t in lines[k]) - 3      # room for the lowest error bar
-xlo, xhi = min(allp) - 1.2, max(allp) + 1.6
+
+# --- reference points (computed before axis limits so they fit on-axis) ---
+# BoN baseline: single-turn best-of-N, max-presence pick on its frontier
+_bpick = max(M._frontier(load_fast(os.path.join(CELL, "bon"))), key=lambda f: f[1])
+bon_x, bon_y = _bpick[0], _bpick[1] * 10
+# selected DEPLOYED run: LogitTilt row, self_harm/Qwen3.5-4B (tab:main / tab:breadth-full) = 99.5 / 54.4
+sel_x, sel_y = 54.4, 99.5
+
+xlo = min(min(allp), bon_x) - 1.2
+xhi = max(max(allp), sel_x) + 3.0
 ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, 103)
 ax.axvspan(X_BON, xhi, color="#bcbcbc", alpha=0.22, lw=0, zorder=0)   # grey >=BoN band
-ax.axvline(X_BON, color="#8a8a8a", lw=1.0, ls=":", zorder=1)
+
+# BoN dot + label (top-right, not in legend)
+ax.plot(bon_x, bon_y, marker="o", ms=8, color="#333333", mec="white", mew=1.0, zorder=8)
+ax.annotate("BoN\n(3t, 8r)", (bon_x, bon_y), textcoords="offset points", xytext=(6, 4),
+            ha="left", va="bottom", fontsize=12.5, color="#333333", zorder=9)
+# selected deployed run star + label (not in legend)
+ax.plot(sel_x, sel_y, marker="*", ms=19, color="#000000", mec="white", mew=1.1, zorder=10)
+ax.annotate("LogitTilt\n(3t, 5r)", (sel_x, sel_y), textcoords="offset points",
+            xytext=(9, 0), ha="left", va="center", fontsize=12.5, color="#000000", zorder=10)
 
 def col(k):
     t = (k - ROUND_KS[0]) / max(1, ROUND_KS[-1] - ROUND_KS[0])
