@@ -2,7 +2,7 @@
 """Appendix beta-sweep grid, restyled to match the main pareto-sweep figure: viridis (colour-blind
 safe) curves + a shared colourbar keying beta, a neutral grey >=(BoN-3%) selection band, BoN dotted
 + operating dot, and a dot-sized star at the tuned beta (with a small beta label). Layout unchanged:
-4 model COLUMNS x behaviour ROWS, split into A (behaviours 1-4) and B (5-8). Straight from each
+4 model COLUMNS x behaviour ROWS, split into A (behaviours 1-3) and B (4-8). Straight from each
 cell's param_selection.json. Run on the box: UV_NO_SYNC=1 uv run --no-sync python -X utf8 beta_sweep_split.py
 """
 import os, json
@@ -104,5 +104,5 @@ def make(behs, fname):
     print("saved", fname, flush=True)
 
 
-make(BEHS[:6], "beta_sweep_A")
-make(BEHS[6:], "beta_sweep_B")
+make(BEHS[:3], "beta_sweep_A")
+make(BEHS[3:], "beta_sweep_B")
