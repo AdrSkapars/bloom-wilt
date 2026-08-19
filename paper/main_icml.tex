@@ -73,12 +73,12 @@
 
 % The \icmltitle you define below is probably too long as a header.
 % Therefore, a short form for the running title is supplied here:
-\icmltitlerunning{BLOOM-WILT: Logit Tilting for Automated Behavioural Auditing of LLMs}
+\icmltitlerunning{BLOOM-WILT: Logit Tilting Behaviour Elicition for Automated LLM Auditing}
 
 \begin{document}
 
 \twocolumn[
-  \icmltitle{BLOOM-WILT: Logit Tilting for Automated \\ Behavioural Auditing of LLMs}
+  \icmltitle{BLOOM-WILT: Logit Tilting Behaviour Elicition\\ for Automated LLM Auditing}
 
   % It is OKAY to include author information, even for blind submissions: the
   % style file will automatically remove it for you unless you've provided
@@ -175,7 +175,7 @@ We ask which is the better place to spend a fixed budget, measuring both how str
 We find the output to be the stronger axis, especially when using our method, \textbf{LogitTilt}. It steers the target model's own next-token distribution at each decoding step toward a second distribution from the \emph{same weights}, conditioned on a behaviour-eliciting system prompt written automatically from the description BLOOM already takes as input.
 A single strength $\beta$ governs the tilt, and it is the only quantity we tune per (model, behaviour) cell, whereas the other baselines each require tuning several hyperparameters.
 Sweeping $\beta$ allows traces the whole elicitation--plausibility (Pareto) frontier rather than fixing one operating point.
-The strongest input-side method we tested was \emph{G-PAIR}, which lets the auditor revise its strategy between rounds from the transcripts and judge scores it has already seen.
+The strongest input-side method we tested was \textbf{G-PAIR}, which lets the auditor revise its strategy between rounds from the transcripts and judge scores it has already seen.
 Combining both methods gives \textbf{WILT}, confining itself to the rollout stage and thus being  applicable to any existing auditor. The full pipeline we contribute is \textbf{BLOOM-WILT} (\emph{BLOOM With Input iteration and Logit Tilting}, \cref{fig:method}).
 On our headline slice, self-harm encouragement on Qwen3.5-4B, it lifts behaviour presence from $51\%$ to $100\%$ at matched compute while holding output probability above vanilla BLOOM's instead of spending it.
 
@@ -559,8 +559,6 @@ Auditing a deployed model for rare, on-policy failures means eliciting the behav
 
 
 
-\newpage
-.
 \newpage
 \bibliography{main}
 \bibliographystyle{icml2026}
