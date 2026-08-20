@@ -2,9 +2,9 @@
 viewer.py — launch the bloom-viewer dev server.
 
 Usage:
-    python viewer.py                         # uses runs/ in the same directory
-    python viewer.py runs_9/quantized_3turns # specific results folder
-    python viewer.py runs_9 --port 5174      # custom port
+    python viewer.py                          # most recent runs_* folder
+    python viewer.py runs_new/my_logittilt    # specific results folder
+    python viewer.py runs_new --port 5174     # custom port
 
 Only requires Python stdlib — no uv, no venv, no extra packages.
 npm must be available on PATH (the viewer itself is a Svelte app).
@@ -17,7 +17,10 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR   = Path(__file__).parent.resolve()
-VIEWER_DIR   = (SCRIPT_DIR / ".." / ".." / "src" / "bloom-viewer").resolve()
+# Runs live under the runs root (experiments/bloom), one level up from helpers/; the viewer
+# app is at <repo>/src/bloom-viewer, three levels up.
+RUNS_ROOT    = SCRIPT_DIR.parent
+VIEWER_DIR   = (SCRIPT_DIR / ".." / ".." / ".." / "src" / "bloom-viewer").resolve()
 DEFAULT_PORT = 5173
 
 
@@ -25,7 +28,7 @@ def main():
     parser = argparse.ArgumentParser(description="Launch the bloom-viewer dev server.")
     parser.add_argument(
         "results_dir", nargs="?", default=None,
-        help="Results folder to view (relative to this script or absolute). "
+        help="Results folder to view (relative to the runs root, or absolute). "
              "Defaults to the most recently modified runs_* folder.",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -35,12 +38,12 @@ def main():
     if args.results_dir:
         results_path = Path(args.results_dir)
         if not results_path.is_absolute():
-            results_path = SCRIPT_DIR / results_path
+            results_path = RUNS_ROOT / results_path
         results_path = results_path.resolve()
     else:
         # Pick the most recently modified runs_* folder, falling back to SCRIPT_DIR
-        candidates = sorted(SCRIPT_DIR.glob("runs*"), key=lambda p: p.stat().st_mtime, reverse=True)
-        results_path = candidates[0] if candidates else SCRIPT_DIR
+        candidates = sorted(RUNS_ROOT.glob("runs*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        results_path = candidates[0] if candidates else RUNS_ROOT
         print(f"No results dir given — using: {results_path}", flush=True)
 
     if not results_path.exists():
@@ -49,7 +52,7 @@ def main():
 
     if not VIEWER_DIR.exists():
         print(f"ERROR: bloom-viewer not found at {VIEWER_DIR}", file=sys.stderr)
-        print("Expected: src/bloom-viewer/package.json two levels up from this script.", file=sys.stderr)
+        print("Expected: <repo>/src/bloom-viewer/package.json.", file=sys.stderr)
         sys.exit(1)
 
     print(f"Viewer:  {VIEWER_DIR}", flush=True)

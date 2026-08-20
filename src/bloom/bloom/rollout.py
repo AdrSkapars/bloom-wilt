@@ -754,6 +754,19 @@ async def run_rollout(cfg: DotDict, prompts_yaml: Dict, output_dir: Path,
     is local — that path owns corruption / token-level search and (via ApiModel) also supports
     a hosted-API evaluator. The pure-async orchestrator below is used only when the target
     itself is a hosted API model (no corruption)."""
+    # A hosted-API target exposes no logits, so every method that steers or searches over the
+    # target's distribution would silently degrade to plain sampling on the async path below —
+    # the run completes and reports scores computed over unsteered transcripts. Fail loudly.
+    if not cfg.rollout.target.startswith("local/"):
+        _needs_logits = [_n for _n in ("jailbroken_output", "tokbias_output", "search_output",
+                                       "search_input", "flrt_search_input")
+                         if bool((cfg.get(_n, {}) or {}).get("enabled", False))]
+        if _needs_logits:
+            raise RuntimeError(
+                f"rollout.target={cfg.rollout.target!r} is a hosted API model (non-'local/') and "
+                f"has no logits, so it cannot be steered or searched over. Either set the target "
+                f"to 'local/<hf-repo>', or disable: " + ", ".join(_needs_logits))
+
     # Dispatch on the TARGET (not evaluator): corruption/search need the target's logits.
     # The evaluator may still be a hosted API model via ApiModel.
     if cfg.rollout.target.startswith("local/"):

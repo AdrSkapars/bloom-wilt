@@ -73,12 +73,12 @@
 
 % The \icmltitle you define below is probably too long as a header.
 % Therefore, a short form for the running title is supplied here:
-\icmltitlerunning{BLOOM-WILT: Logit Tilting Behaviour Elicition for Automated LLM Auditing}
+\icmltitlerunning{BLOOM-WILT: Logit Tilting Behaviour Elicitation for Automated LLM Auditing}
 
 \begin{document}
 
 \twocolumn[
-  \icmltitle{BLOOM-WILT: Logit Tilting Behaviour Elicition\\ for Automated LLM Auditing}
+  \icmltitle{BLOOM-WILT: Logit Tilting Behaviour Elicitation\\ for Automated LLM Auditing}
 
   % It is OKAY to include author information, even for blind submissions: the
   % style file will automatically remove it for you unless you've provided
@@ -179,7 +179,7 @@ The strongest input-side method we tested was \textbf{G-PAIR}, which lets the au
 Combining both methods gives \textbf{WILT}, confining itself to the rollout stage and thus being  applicable to any existing auditor. The full pipeline we contribute is \textbf{BLOOM-WILT} (\emph{BLOOM With Input iteration and Logit Tilting}, \cref{fig:method}).
 On our headline slice, self-harm encouragement on Qwen3.5-4B, it lifts behaviour presence from $51\%$ to $100\%$ at matched compute while holding output probability above vanilla BLOOM's instead of spending it.
 
-paragraph{Contributions.}
+\paragraph{Contributions.}
 \begin{itemize}
   \item \textbf{We test where elicitation pressure is best applied.} We port input-side methods (BEAST-in, FLRT, G-PAIR) and output-side methods (BEAST-out, TokenBias, LogitTilt) into a single auditing pipeline and compare them at matched compute, finding output-side methods to be more promising across cells (\cref{tab:main}, \cref{app:comparison-slices}).
   \item \textbf{We introduce WILT, a training-free elicitation method.} LogitTilt steers the target model toward the behaviour, and G-PAIR refines the auditor's messages across rounds. Ablations attribute the gain to the \emph{relevance} of the steering distribution, showing that a prompted term suffices where prior work trains a proxy (\cref{tab:ablations}).
