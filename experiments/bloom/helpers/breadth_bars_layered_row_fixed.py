@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.transforms import blended_transform_factory as blend
 
-REPO = "/workspace/inversion_optimisation"
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 HERE = os.path.dirname(__file__)
 
 BEH = ["Racial\nbias", "Political\nbias", "Reinforce\ndelusions", "Self-harm\nencourage",
@@ -82,8 +82,9 @@ for gi in range(n):
     ax.text(gx(gi), 1.02, BEH[gi], transform=tr, ha="center", va="bottom", fontsize=13)
 
 LEG = ["WILT", "LogitTilt", "Vanilla"]   # match the bar draw order (back -> front)
+LEG_LABELS = ["WILT", "LogitTilt", "Vanilla BLOOM"]   # display names for the legend
 handles = [Patch(facecolor=COL[m], hatch=HATCH[m], edgecolor="#333333", linewidth=0.8, label=m) for m in LEG]
-fig.legend(handles, LEG, ncol=3, frameon=False, fontsize=13,
+fig.legend(handles, LEG_LABELS, ncol=3, frameon=False, fontsize=13,
            loc="upper center", bbox_to_anchor=(0.5, 0.995))
 fig.subplots_adjust(left=0.07, right=0.99, top=0.82, bottom=0.20)
 out = os.path.join(REPO, "paper/figures/breadth_bars_layered_row_fixed.pdf")

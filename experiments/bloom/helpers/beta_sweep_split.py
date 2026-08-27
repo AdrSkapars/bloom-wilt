@@ -2,7 +2,7 @@
 """Appendix beta-sweep grid, restyled to match the main pareto-sweep figure: viridis (colour-blind
 safe) curves + a shared colourbar keying beta, a neutral grey >=(BoN-3%) selection band, BoN dotted
 + operating dot, and a dot-sized star at the tuned beta (with a small beta label). Layout unchanged:
-4 model COLUMNS x behaviour ROWS, split into A (behaviours 1-3) and B (4-8). Straight from each
+4 model COLUMNS x behaviour ROWS, split into A (behaviour 1) and B (2-8). Straight from each
 cell's param_selection.json. Run on the box: UV_NO_SYNC=1 uv run --no-sync python -X utf8 beta_sweep_split.py
 """
 import os, json
@@ -13,8 +13,8 @@ from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.cm import ScalarMappable
 
-REPO = "/workspace/inversion_optimisation"
-RN = os.path.join(REPO, "experiments/bloom/runs_new")
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+RN = os.environ.get("BLOOM_RUNS", os.path.join(REPO, "experiments/bloom/runs_hyperparam"))
 FIGDIR = os.path.join(REPO, "paper/figures")
 # order MUST match the behaviour list in the paper's experimental-setup section (reward hacking dropped)
 BEHS = [("Racial", "racial"), ("Political", "political"), ("Delusions", "delusions"),
@@ -67,7 +67,7 @@ def panel(ax, d):
 
 def make(behs, fname):
     nR = len(behs)
-    H = 3.05 * nR
+    H = 3.05 * nR + 1.55   # panels + fixed-height top strip (colourbar/legend/titles)
     fig, axes = plt.subplots(nR, 4, figsize=(15, H), dpi=140, squeeze=False)
     for r, (blab, bdir) in enumerate(behs):
         for c, (mlab, mdir) in enumerate(MODELS):
@@ -83,7 +83,7 @@ def make(behs, fname):
             if r == nR - 1:
                 ax.set_xlabel("output probability (%)", fontsize=13)
     # panels use nearly the full width; the colourbar + legend live in a top strip
-    fig.subplots_adjust(top=1 - 1.55 / H, bottom=0.045, left=0.055, right=0.988,
+    fig.subplots_adjust(top=1 - 1.55 / H, bottom=0.55 / H, left=0.055, right=0.988,
                         hspace=0.30, wspace=0.18)
     # --- top strip: horizontal colourbar (centre-left) + legend (right) ---
     cy = 1 - 0.62 / H
@@ -104,5 +104,8 @@ def make(behs, fname):
     print("saved", fname, flush=True)
 
 
-make(BEHS[:3], "beta_sweep_A")
-make(BEHS[3:], "beta_sweep_B")
+# BETA_SPLIT = number of behaviour rows in A; BETA_SUFFIX appends to both filenames
+SPLIT = int(os.environ.get("BETA_SPLIT", "1"))
+SUF = os.environ.get("BETA_SUFFIX", "")
+make(BEHS[:SPLIT], f"beta_sweep_A{SUF}")
+make(BEHS[SPLIT:], f"beta_sweep_B{SUF}")
