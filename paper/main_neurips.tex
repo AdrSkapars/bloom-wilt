@@ -163,9 +163,9 @@ A growing line of work therefore attempts to automate the search for examples, l
 BLOOM is one such method and it requires only a natural-language description of the behaviour being tested \citep{gupta2025bloom}: it proposes a diverse set of relevant evaluation scenarios, simulates user interactions with the target model for each scenario, then scores the resulting transcripts for the behaviour's presence.
 What methods like BLOOM lack is optimisation pressure, or the means to adapt their interactions towards the target model, so their hit rate remains low.
 
-By contrast, the red-teaming literature has no shortage of optimisation pressure, either applied to the target model's inputs \citep{sadasivan2024fast,chao2023jailbreaking} or to its outputs \citep{zhao2024weak,angell2026tail}.
+By contrast, the red-teaming literature has no shortage of optimisation pressure, either applied to the target model's inputs \citep{sadasivan2024fast,chao2023jailbreaking} or to its outputs \citep{zhao2024weak,zhou2024emulated}.
 It does not, however, provide an end-to-end evaluation pipeline: these methods are typically applied to existing harmful requests, producing single-turn examples of target compliance, rather than the target exhibiting some behaviour spontaneously.
-Finding these examples also tends to be costly, requiring gradients \citep{zou2023universal}, a fine-tuned judge \citep{mazeika2024harmbench,souly2024strongreject}, or even a fine-tuned version of the target \citep{liu2024proxy}.
+Finding these examples also tends to be costly, requiring gradients \citep{zou2023universal}, a fine-tuned judge \citep{mazeika2024harmbench}, or even a fine-tuned version of the target \citep{thompson2024flrt}.
 Without additional constraints and fluency penalties \citep{thompson2024flrt}, the found examples are often inputs no user would type or outputs the target model would almost never produce. This makes them uninteresting to developers trying to study and prevent failure modes that would actually come up during deployment.
 
 To address the gap in existing literature, we present BLOOM-\textit{WILT} (With Input iteration and Logit Tilting), an end-to-end auditing pipeline that applies optimisation pressure at both ends of the interaction without giving up plausibility at either.
@@ -214,7 +214,7 @@ The combined WILT extension produces an increase from $51\%$ to $100\%$ average 
 \citet{perez2022redteaming} introduced the LLM-evaluator-against-target paradigm: one model generates test inputs for another and a classifier scores the transcripts.
 BLOOM \citep{gupta2025bloom} formalises this into a reproducible multi-stage auditing pipeline driven by a behaviour description (\cref{sec:method}).
 Petri \citep{fronsdal2025petri} instead takes an open-ended approach rather than targeting a single named behaviour as we do.
-We build on BLOOM because its multi-turn rollouts probe behaviours in realistic interactions rather than single-turn prompts, the regime where many behavioural failures emerge \citep{russinovich2024crescendo,anil2024manyshot} and where online elicitation keeps finding failures that static test sets miss \citep{huang2025multiturn}.
+We build on BLOOM because its multi-turn rollouts probe behaviours in realistic interactions rather than single-turn prompts, the regime where many behavioural failures emerge \citep{russinovich2024crescendo} and where online elicitation keeps finding failures that static test sets miss \citep{huang2025multiturn}.
 
 % Whether such auditing should use model internals is contested, with \citet{casper2024blackbox} arguing that white-box access tightens worst-case bounds while \citet{sheshadri2026auditbench} find auditing agents ``perform best with black-box tools''. Our proposed pipeline requires no access to model internals aside from output logits.
 
@@ -229,7 +229,7 @@ Token-level attacks search for adversarial strings: AutoDAN \citep{liu2023autoda
 These tend to produce strings no real user would type. 
 BEAST and FLRT produce inputs closer to natural language than other methods, which is why we adopt them as baselines in our experiments, but their optimised sequences are still visibly distinguishable from user-written prompts (\cref{app:qual-inputs}).
 
-Alternatively, prompt-iteration methods like PAIR \citep{chao2023jailbreaking} leverage other language models to rewrite whole prompts based on past target model responses, with later methods incorporating tree-based search \citep{mehrotra2023tap} or swapping the attacker model's in-context learning for actual reinforcement learning \citet{chowdhury2025pathological}.
+Alternatively, prompt-iteration methods like PAIR \citep{chao2023jailbreaking} leverage other language models to rewrite whole prompts based on past target model responses, with later methods incorporating tree-based search \citep{mehrotra2023tap} or swapping the attacker model's in-context learning for actual reinforcement learning \citep{chowdhury2025pathological}.
 Overall, we find these methods to be the weaker axis for behavioural elicitation, with steering the target model's output generally beating optimising its input (\cref{tab:main}).
 
 
@@ -369,7 +369,7 @@ Llama-3.2-3B-Instruct \citep{grattafiori2024llama3}, Phi-4-mini-instruct \citep{
 
 
 \paragraph{Auditor models.}
-A fixed auditor model is used to generate BLOOM's scenarios and rollout inputs, score each transcript for behaviour presence and, for G-PAIR, refine the rollout strategy. Our main auditor model is Gemma-4-26B-A4B \citep{gemma2026gemma4}, a sparse mixture-of-experts model (${\sim}4$B active parameters) that we host locally on-GPU (specifically the FP8-Dynamic quantised checkpoint, for GPU efficiency). We use a local model because the input-side baselines (BEAST-in, FLRT) perform a token-level search over the auditor's message, which requires access to the model's logits. We compare the local model's performance against a frontier model, Claude-Sonnet-4.6 \citep{anthropic2026claude}, and find them to be interchangeable. The two model's judge scores have high inter-annotator agreement, sitting in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977application}. 
+A fixed auditor model is used to generate BLOOM's scenarios and rollout inputs, score each transcript for behaviour presence and, for G-PAIR, refine the rollout strategy. Our main auditor model is Gemma-4-26B-A4B \citep{gemma2026gemma4}, a sparse mixture-of-experts model (${\sim}4$B active parameters) that we host locally on-GPU (specifically the FP8-Dynamic quantised checkpoint, for GPU efficiency). We use a local model because the input-side baselines (BEAST-in, FLRT) perform a token-level search over the auditor's message, which requires access to the model's logits. We compare the local model's performance against a frontier model, Claude-Sonnet-4.6 \citep{anthropic2026claude}, and find them to be interchangeable. The two model's judge scores have high inter-annotator agreement, sitting in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977measurement}. 
 
 % in the auditor-robustness study for LogitTilt (\cref{tab:auditor}). We also do a judge-robustness study for all the methods (\cref{app:methods-judge}), since the judgment stage does not require access to the logits for any method.
 
@@ -526,7 +526,7 @@ LogitTilt beats G-PAIR by itself, but the two are not mutually exclusive. Their 
 
 % \subsection{Auditor robustness}
 
-% \Cref{tab:auditor} swaps the auditor's generator and judge roles between Gemma-4-26B-A4B and Claude-Sonnet-4.6 for LogitTilt on Qwen3.5-4B, self-harm encouragement, testing how sensitive the results are to the choice of auditor. Elicitation is stable across all four combinations, but the more capable Sonnet consistently scores lower. We measure the judges' agreement with Cohen's quadratic-weighted kappa \citep{cohen1968weighted}. The gap is largest on its own generated transcripts, where the two judges also agree the least ($0.90$ against $0.95$ on Gemma-generated ones). However, both values sit in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977application}. The judge difference does not affect our method comparison findings, since \cref{app:methods-judge} shows that LogitTilt and WILT still perform better than all the other methods, according to the Sonnet judge.
+% \Cref{tab:auditor} swaps the auditor's generator and judge roles between Gemma-4-26B-A4B and Claude-Sonnet-4.6 for LogitTilt on Qwen3.5-4B, self-harm encouragement, testing how sensitive the results are to the choice of auditor. Elicitation is stable across all four combinations, but the more capable Sonnet consistently scores lower. We measure the judges' agreement with Cohen's quadratic-weighted kappa \citep{cohen1968weighted}. The gap is largest on its own generated transcripts, where the two judges also agree the least ($0.90$ against $0.95$ on Gemma-generated ones). However, both values sit in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977measurement}. The judge difference does not affect our method comparison findings, since \cref{app:methods-judge} shows that LogitTilt and WILT still perform better than all the other methods, according to the Sonnet judge.
 
 
 % \begin{table}[t]
@@ -638,7 +638,7 @@ Either way, we demonstrate that pre-run $\beta$ selection traces the Pareto fron
 
 % \Cref{fig:scaling} separates the two ways to spend the rollout budget, lengthening the interaction with more turns against resampling more rounds, for LogitTilt on Qwen3.5-4B, self-harm encouragement. We refer to individual points by their turns:rounds values. Unlike elsewhere in the paper, multi-round runs here keep the highest-presence transcript per scenario rather than a probability-constrained one, and since those transcripts tend to be less probable, adding rounds appears to lower average output probability.
 
-% Increasing either turns or rounds raises behaviour presence, consistent with previous work on longer interactions eliciting more behaviours \citep{huang2025eliciting,anil2024manyshot}. No turns-to-rounds ratio is best for presence alone, since the error bars for $2$:$3$, $3$:$2$ and $5$:$1$ overlap. For output probability, though, more turns are clearly better, at least until presence approaches $90\%$. Surprisingly, the $3$:$8$ vanilla best-of-$N$ point is only comparable to the $1$:$1$ LogitTilt point, showing that LogitTilt is much more compute-efficient. The $3$:$5$ LogitTilt point also sits close to the end of every line, so the excess compute is wasted once this setting saturates.
+% Increasing either turns or rounds raises behaviour presence, consistent with previous work on longer interactions eliciting more behaviours \citep{huang2025multiturn,anil2024manyshot}. No turns-to-rounds ratio is best for presence alone, since the error bars for $2$:$3$, $3$:$2$ and $5$:$1$ overlap. For output probability, though, more turns are clearly better, at least until presence approaches $90\%$. Surprisingly, the $3$:$8$ vanilla best-of-$N$ point is only comparable to the $1$:$1$ LogitTilt point, showing that LogitTilt is much more compute-efficient. The $3$:$5$ LogitTilt point also sits close to the end of every line, so the excess compute is wasted once this setting saturates.
 
 
 % \begin{figure}[h]
@@ -683,16 +683,17 @@ The largest gap is on goblin fixation, which is not an unsafe behaviour, so it m
 
 
 
-\section{Limitations and Future Work}
+\section{Limitations}
 % \section{Discussion}
 
 % Lightweight output steering elicits confident, fluent examples of behaviours that these language models were assumed not to produce, suggesting that their safety alignment is shallower than it appeared. The transcripts our elicitation pipeline WILT produces are directly usable by developers to diagnose issues and improve models. The elicited responses are model-specific (\cref{app:cross-model}), showing that the auditor is adapting rather than reciting generic attacks as static benchmarks do. Because the auditor is itself a model, it should also keep pace as target models improve: our input-refinement strategy G-PAIR lets more capable auditors strategise and learn from past attempts.
 
+Our method has two limiting requirements: First, it reads the target model's output token distribution, making it inapplicable to text-only APIs. This is a mild constraint in practice since our work targets developers auditing their own models and many audited models are open-weight. Second, elicitation depends on the behaviour-prompted distribution still providing a useful steering signal, which may already fail for Gemma-4-E4B's self-harm encouragement, where the model refuses even when prompted. Separately, all $4$ target models are small ($3$--$4$B), chosen deliberately from different families so that cross-model differences reflect alignment rather than scale, and we did vary the auditor across scales.
+
 % \textcolor{brown}{[Orphaned content. Make a bigger point about extensibility of WILT to other frameworks if you can.]} 
-WILT still inherits some limitations of the auditing framework it extends, with ports to other auditing frameworks \citep{brown2025task,feng2025dataswarms,huang2025multiturn} being left for future work.
+WILT inherits some of the limitations of the auditing framework it extends, with ports to other auditing frameworks \citep{brown2025task,huang2025multiturn} being left for future work.
 One such limitation is that its generated scenarios are sometimes contrived. A capable target model may then recognise that it is being evaluated and adjust its behaviour \citep{meinke2024frontier,needham2025large}, so we may not be tracking the target models' actual propensities under real user traffic. Seeding the auditor with real user inputs and extending rollouts to $10$ or more turns could help close this gap \citep{kissane2026measuring}. The auditor's own capability also bounds what it can surface, since a scenario or strategy it cannot imagine goes unaudited.
 
-Our method adds two requirements of its own. Firstly, it reads the target model's output token distribution, making it inapplicable to text-only APIs. This is a mild constraint in practice since our work targets developers auditing their own models and many audited models are open-weight. Secondly, elicitation depends on the behaviour-prompted distribution still providing a useful steering signal, which may already fail for Gemma-4-E4B's self-harm encouragement, where the model refuses even when prompted. Separately, all $4$ target models are small ($3$--$4$B), chosen deliberately from different families so that cross-model differences reflect alignment rather than scale, and we did vary the auditor across scales.
 
 
 
@@ -704,7 +705,7 @@ Our method adds two requirements of its own. Firstly, it reads the target model'
 
 
 
-\section{Conclusion}
+\section{Conclusions}
 
 Auditing a deployed model for rare, on-policy failures means eliciting the behaviour without pushing the target model off its own distribution.
 We presented BLOOM-WILT, which applies optimisation pressure at both ends of that interaction, with G-PAIR refining the auditor's messages across rounds from previously scored interactions, and LogitTilt reweighting the target model's decoding using its own distribution under a behaviour-eliciting prompt.
@@ -891,7 +892,7 @@ We tune $\lambda$ per (model, behaviour); the deployed values are in \cref{tab:t
 
 \Cref{fig:scaling} separates the two ways to spend the rollout budget, lengthening the interaction with more turns against resampling more rounds, for LogitTilt on Qwen3.5-4B, self-harm encouragement. We refer to individual points by their turns:rounds values. Unlike elsewhere in the paper, multi-round runs here keep the highest-presence transcript per scenario rather than a probability-constrained one, and since those transcripts tend to be less probable, adding rounds appears to lower average output probability.
 
-Increasing either turns or rounds raises behaviour presence, consistent with previous work on longer interactions eliciting more behaviours \citep{huang2025eliciting,anil2024manyshot}. No turns-to-rounds ratio is best for presence alone, since the error bars for $2$:$3$, $3$:$2$ and $5$:$1$ overlap. For output probability, though, more turns are clearly better, at least until presence approaches $90\%$. Surprisingly, the $3$:$8$ vanilla best-of-$N$ point is only comparable to the $1$:$1$ LogitTilt point, showing that LogitTilt is much more compute-efficient. The $3$:$5$ LogitTilt point also sits close to the end of every line, so the excess compute is wasted once this setting saturates.
+Increasing either turns or rounds raises behaviour presence, consistent with previous work on longer interactions eliciting more behaviours \citep{huang2025multiturn,anil2024manyshot}. No turns-to-rounds ratio is best for presence alone, since the error bars for $2$:$3$, $3$:$2$ and $5$:$1$ overlap. For output probability, though, more turns are clearly better, at least until presence approaches $90\%$. Surprisingly, the $3$:$8$ vanilla best-of-$N$ point is only comparable to the $1$:$1$ LogitTilt point, showing that LogitTilt is much more compute-efficient. The $3$:$5$ LogitTilt point also sits close to the end of every line, so the excess compute is wasted once this setting saturates.
 
 
 \begin{figure}[h]
@@ -945,7 +946,7 @@ The full method comparison covers $6$ (model, behaviour) combination, formed fro
 
 \section{Testing auditor choice robustness}\label[appendix]{app:methods-judge}
 
-\Cref{tab:auditor} swaps the auditor's generator and judge roles between Gemma-4-26B-A4B and Claude-Sonnet-4.6 for LogitTilt on Qwen3.5-4B, self-harm encouragement, testing how sensitive the results are to the choice of auditor. Elicitation is stable across all four combinations, but the more capable Sonnet consistently scores lower. We measure the judges' agreement with Cohen's quadratic-weighted kappa \citep{cohen1968weighted}. The gap is largest on its own generated transcripts, where the two judges also agree the least ($0.90$ against $0.95$ on Gemma-generated ones). However, both values sit in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977application}. 
+\Cref{tab:auditor} swaps the auditor's generator and judge roles between Gemma-4-26B-A4B and Claude-Sonnet-4.6 for LogitTilt on Qwen3.5-4B, self-harm encouragement, testing how sensitive the results are to the choice of auditor. Elicitation is stable across all four combinations, but the more capable Sonnet consistently scores lower. We measure the judges' agreement with Cohen's quadratic-weighted kappa \citep{cohen1968weighted}. The gap is largest on its own generated transcripts, where the two judges also agree the least ($0.90$ against $0.95$ on Gemma-generated ones). However, both values sit in the $0.81$--$1.00$ ``almost perfect'' range of \citet{landis1977measurement}. 
 
 
 \begin{table}[t]
