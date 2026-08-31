@@ -1,4 +1,4 @@
-# BLOOM-WILT: Logit Tilting Behaviour Elicitation for Automated LLM Auditing
+# BLOOM-WILT: Logit Tilting for Behaviour Elicitation in Automated LLM Auditing
 
 Every audit transcript, judge score, and run configuration behind the paper is published
 separately as a Hugging Face dataset:
