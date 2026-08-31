@@ -131,7 +131,6 @@ src/bloom/bloom_corrupt.py   entry point and CFG
 src/bloom/bloom/             core, pipeline, rollout, wilt, search, flrt
 src/bloom/prompts/           behaviour specs + shared prompt templates
 experiments/bloom/helpers/   analysis and plotting for the paper
-paper/                       ICML and NeurIPS sources
 ```
 
 The scripts in `helpers/` read a runs tree that is no longer in this repository — fetch it

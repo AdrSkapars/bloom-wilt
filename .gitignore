@@ -47,3 +47,6 @@ paper/**/*.synctex.gz
 paper/**/*.synctex*
 paper/**/*.fls
 paper/**/*.fdb_latexmk
+
+# Paper sources — kept locally, not published
+paper/
