@@ -34,8 +34,9 @@ Gemma-4-26B-A4B as auditor, racial bias, 5 rounds × 3 turns.
 python src/bloom/bloom_corrupt.py
 ```
 
-**LogitTilt** — set `BLOOM_JAIL_MODEL` to switch on output-side steering. `self` uses the
-target as its own steering expert, which is what the paper does:
+**LogitTilt** — set `BLOOM_JAIL_MODEL` to switch on output-side steering. It is also
+available on its own as an [Inspect extension](https://adrskapars.github.io/inspect_logittilt/).
+`self` uses the target as its own steering expert, which is what the paper does:
 
 ```bash
 BLOOM_JAIL_MODEL=self BLOOM_JAIL_BETA=1.5 \
@@ -135,17 +136,3 @@ paper/                       ICML and NeurIPS sources
 
 The scripts in `helpers/` read a runs tree that is no longer in this repository — fetch it
 from the Hugging Face dataset above first.
-
-## Using just LogitTilt
-
-This repo is the research code for the whole pipeline. To use just LogitTilt in your own
-evaluations, there is an [Inspect](https://inspect.aisi.org.uk) extension for it — the
-steering on its own, without the rest of BLOOM-WILT:
-
-```bash
-pip install inspect-logittilt
-```
-
-**[Documentation](https://adrskapars.github.io/inspect_logittilt/)** ·
-**[Repository](https://github.com/AdrSkapars/inspect_logittilt)** ·
-**[PyPI](https://pypi.org/project/inspect-logittilt/)**
