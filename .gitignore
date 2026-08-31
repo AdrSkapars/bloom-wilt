@@ -48,5 +48,7 @@ paper/**/*.synctex*
 paper/**/*.fls
 paper/**/*.fdb_latexmk
 
-# Paper sources — kept locally, not published
-paper/
+# Paper sources — kept locally, not published. Figures are tracked: the
+# LessWrong post embeds one of them by raw.githubusercontent URL.
+paper/*
+!paper/figures/
