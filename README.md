@@ -1,17 +1,5 @@
 # BLOOM-WILT: Logit Tilting Behaviour Elicitation for Automated LLM Auditing
 
-This is the research code behind the paper. To use LogitTilt in your own evaluations,
-install the [Inspect](https://inspect.aisi.org.uk) extension instead — it is the steering
-on its own, without the rest of the pipeline:
-
-```bash
-pip install inspect-logittilt
-```
-
-**[Documentation](https://adrskapars.github.io/inspect_logittilt/)** ·
-**[Repository](https://github.com/AdrSkapars/inspect_logittilt)** ·
-**[PyPI](https://pypi.org/project/inspect-logittilt/)**
-
 Every audit transcript, judge score, and run configuration behind the paper is published
 separately as a Hugging Face dataset:
 **[AdrSkapars/bloom-wilt-transcripts](https://huggingface.co/datasets/AdrSkapars/bloom-wilt-transcripts)**
@@ -147,3 +135,17 @@ paper/                       ICML and NeurIPS sources
 
 The scripts in `helpers/` read a runs tree that is no longer in this repository — fetch it
 from the Hugging Face dataset above first.
+
+## Using just LogitTilt
+
+This repo is the research code for the whole pipeline. To use just LogitTilt in your own
+evaluations, there is an [Inspect](https://inspect.aisi.org.uk) extension for it — the
+steering on its own, without the rest of BLOOM-WILT:
+
+```bash
+pip install inspect-logittilt
+```
+
+**[Documentation](https://adrskapars.github.io/inspect_logittilt/)** ·
+**[Repository](https://github.com/AdrSkapars/inspect_logittilt)** ·
+**[PyPI](https://pypi.org/project/inspect-logittilt/)**
