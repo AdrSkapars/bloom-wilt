@@ -213,7 +213,13 @@ def _load_hf_poe_models(target_hf: str, jail_hf: str, gpu_id: int, target_only: 
     # separate them. BLOOM_TARGET_GPUS=1,2,3 caps every other card at zero so accelerate
     # leaves them alone, keeping the auditor's GPU free.
     device_map = (os.environ.get("BLOOM_TARGET_DEVICE_MAP", "") or "").strip() or None
-    load_kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
+    # "auto" lets a pre-quantised checkpoint govern its own load. Forcing bfloat16 makes
+    # transformers dequantise an FP8 or AWQ checkpoint on the way in, which turns a 167GB
+    # download into 568GB of weights and OOMs before the first token.
+    _dtype = (os.environ.get("BLOOM_TARGET_DTYPE", "") or "").strip() or None
+    _dtype = {"auto": "auto", "bfloat16": torch.bfloat16, "float16": torch.float16,
+              "": None}.get(_dtype, _dtype) if _dtype else torch.bfloat16
+    load_kw = dict(torch_dtype=_dtype, attn_implementation="sdpa")
     max_memory = None
     _gpus = (os.environ.get("BLOOM_TARGET_GPUS", "") or "").replace(" ", "")
     if device_map and _gpus:
