@@ -52,3 +52,7 @@ paper/**/*.fdb_latexmk
 # LessWrong post embeds one of them by raw.githubusercontent URL.
 paper/*
 !paper/figures/
+
+# API keys and the downloaded kickoff banks — local only
+.env.local
+experiments/bloom/_banks/
