@@ -4,7 +4,9 @@ Prompts for the key without echoing it, saves it to .env.local (gitignored), the
 makes one small call over the same litellm path BLOOM_EVAL_MODEL uses, so a
 routing failure shows up here rather than at $8/hour.
 
-Usage: python scripts/check_auditor_api.py
+Run it with an isolated env -- a plain `uv run` would try to build vLLM:
+
+    uv run --no-project --with litellm python scripts/check_auditor_api.py
 """
 
 import getpass
@@ -16,10 +18,24 @@ MODEL = os.environ.get("BLOOM_EVAL_MODEL") or "openrouter/google/gemma-4-26b-a4b
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 
 
+def _read_env() -> str:
+    """PowerShell's >> writes UTF-16LE, so decode by trial rather than assuming UTF-8."""
+    if not ENV_FILE.exists():
+        return ""
+    raw = ENV_FILE.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16", "utf-8", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    return ""
+
+
 def _key() -> str:
-    for line in (ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []):
+    for line in _read_env().splitlines():
+        line = line.strip().lstrip("﻿")
         if line.startswith("OPENROUTER_API_KEY="):
-            return line.split("=", 1)[1].strip()
+            return line.split("=", 1)[1].strip().strip("'\"")
     return os.environ.get("OPENROUTER_API_KEY") or getpass.getpass(
         "OpenRouter API key (nothing will appear): "
     ).strip()
@@ -32,9 +48,7 @@ def main() -> int:
         return 1
     os.environ["OPENROUTER_API_KEY"] = key
 
-    if "OPENROUTER_API_KEY" not in (
-        ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
-    ):
+    if "OPENROUTER_API_KEY" not in _read_env():
         with ENV_FILE.open("a", encoding="utf-8") as fh:
             fh.write("OPENROUTER_API_KEY=" + key + "\n")
         print("saved to", ENV_FILE.name, "(gitignored)")
