@@ -201,17 +201,34 @@ def _load_hf_poe_models(target_hf: str, jail_hf: str, gpu_id: int, target_only: 
     same = (jail_hf == target_hf)
     tok = AutoTokenizer.from_pretrained(target_hf)
     tok_c = tok if same else AutoTokenizer.from_pretrained(jail_hf)
-    mt = AutoModelForCausalLM.from_pretrained(
-        target_hf, torch_dtype=torch.bfloat16, attn_implementation="sdpa").to(dev).eval()
-    if target_only:
-        # BoN / vanilla baseline: only the TARGET is ever stepped (no PoE, no jail forward) —
-        # see _jail_generate_hf's target_only branch. So do NOT load a second copy; point mc at
-        # mt. Frees a full model's VRAM (~8GB for a 4B model), which is what lets the BoN arm run
-        # a larger var_batch than the jail arm (which must hold + step both). mc is never used.
+
+    # A checkpoint too large for one card is sharded across every visible GPU by accelerate.
+    # BLOOM_TARGET_DEVICE_MAP=auto turns that on (leave unset for the single-GPU path we use
+    # for 3-4B targets). Sharding moves the input device to wherever the embeddings landed
+    # and the logits to wherever lm_head landed, so `dev` is re-read from the model below and
+    # _hf_poe_generate normalises the logits back onto it.
+    device_map = (os.environ.get("BLOOM_TARGET_DEVICE_MAP", "") or "").strip() or None
+    load_kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
+
+    def _load(repo: str):
+        if device_map:
+            return AutoModelForCausalLM.from_pretrained(repo, device_map=device_map, **load_kw).eval()
+        return AutoModelForCausalLM.from_pretrained(repo, **load_kw).to(dev).eval()
+
+    mt = _load(target_hf)
+    if target_only or same:
+        # Two cases, one saving. BoN / vanilla: only the TARGET is ever stepped (see
+        # _jail_generate_hf's target_only branch), so mc is never read. Self-steering
+        # (jail_hf == target_hf): the SAME weights are stepped over two contexts, and mc is
+        # only ever read — forward passes carrying their own past_key_values — so pointing it
+        # at mt is safe. For a 4B target that saved ~8GB; for a 100GB+ one it is the
+        # difference between fitting on the box and not.
         mc = mt
     else:
-        mc = AutoModelForCausalLM.from_pretrained(
-            jail_hf, torch_dtype=torch.bfloat16, attn_implementation="sdpa").to(dev).eval()
+        mc = _load(jail_hf)
+
+    if device_map:
+        dev = mt.get_input_embeddings().weight.device
     # PoE adds the target and jail-proposal logits index-for-index (z = b1*t + b2*c - b3*n), so
     # the two models MUST share a vocabulary. A mismatch (e.g. Phi 200064 vs Qwen 151936)
     # otherwise surfaces only as a cryptic CUDA device-side assert deep inside generation —
@@ -386,7 +403,10 @@ def _hf_poe_generate(mt, mc, t_prefs, c_prefs, temperature, max_new,
         to = mt(input_ids=ti, attention_mask=ta, use_cache=True, logits_to_keep=1)
         co = mc(input_ids=ci, attention_mask=ca, use_cache=True, logits_to_keep=1)
         tp, cp = to.past_key_values, co.past_key_values
-        tl = to.logits[:, -1, :].float(); cl = co.logits[:, -1, :].float()
+        # .to(device): a sharded model returns its logits on whichever card holds lm_head,
+        # while every scratch tensor below is built on the input device. Same tensor on one
+        # GPU, a cross-device copy per step on several.
+        tl = to.logits[:, -1, :].float().to(device); cl = co.logits[:, -1, :].float().to(device)
         taf, caf = ta, ca
         # Sampling logit is a linear combination of the three distributions:
         #     z = eb1*t + eb2*c - eb3*n
@@ -401,7 +421,7 @@ def _hf_poe_generate(mt, mc, t_prefs, c_prefs, temperature, max_new,
         if cfg_on:
             ni, na = _hf_left_pad(n_prefs, pad_id, device)
             no = mc(input_ids=ni, attention_mask=na, use_cache=True, logits_to_keep=1)
-            ncp = no.past_key_values; nl = no.logits[:, -1, :].float(); naf = na
+            ncp = no.past_key_values; nl = no.logits[:, -1, :].float().to(device); naf = na
         gen: List[List[int]] = [[] for _ in range(B)]
         done = torch.zeros(B, dtype=torch.bool, device=device)
         tlps: List[List[float]] = [[] for _ in range(B)]   # per-token true-target logprob (return_token_lps)
@@ -446,11 +466,11 @@ def _hf_poe_generate(mt, mc, t_prefs, c_prefs, temperature, max_new,
             to = mt(input_ids=nxt.unsqueeze(-1), attention_mask=taf, past_key_values=tp, use_cache=True)
             co = mc(input_ids=nxt.unsqueeze(-1), attention_mask=caf, past_key_values=cp, use_cache=True)
             tp, cp = to.past_key_values, co.past_key_values
-            tl = to.logits[:, -1, :].float(); cl = co.logits[:, -1, :].float()
+            tl = to.logits[:, -1, :].float().to(device); cl = co.logits[:, -1, :].float().to(device)
             if cfg_on:
                 naf = torch.cat([naf, ones], -1)
                 no = mc(input_ids=nxt.unsqueeze(-1), attention_mask=naf, past_key_values=ncp, use_cache=True)
-                ncp = no.past_key_values; nl = no.logits[:, -1, :].float()
+                ncp = no.past_key_values; nl = no.logits[:, -1, :].float().to(device)
         if return_token_lps:
             return gen, tlps
         return gen
