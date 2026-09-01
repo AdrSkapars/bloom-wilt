@@ -135,3 +135,17 @@ experiments/bloom/helpers/   analysis and plotting for the paper
 
 The scripts in `helpers/` read a runs tree that is no longer in this repository — fetch it
 from the Hugging Face dataset above first.
+
+## Citation
+
+```bibtex
+@misc{skapars2026bloomwiltlogittiltingbehaviour,
+      title={BLOOM-WILT: Logit Tilting for Behaviour Elicitation in Automated LLM Auditing}, 
+      author={Adrians Skapars and Edoardo Manino},
+      year={2026},
+      eprint={2608.31105},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2608.31105}, 
+}
+```
