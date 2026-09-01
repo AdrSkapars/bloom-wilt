@@ -202,17 +202,32 @@ def _load_hf_poe_models(target_hf: str, jail_hf: str, gpu_id: int, target_only: 
     tok = AutoTokenizer.from_pretrained(target_hf)
     tok_c = tok if same else AutoTokenizer.from_pretrained(jail_hf)
 
-    # A checkpoint too large for one card is sharded across every visible GPU by accelerate.
-    # BLOOM_TARGET_DEVICE_MAP=auto turns that on (leave unset for the single-GPU path we use
-    # for 3-4B targets). Sharding moves the input device to wherever the embeddings landed
-    # and the logits to wherever lm_head landed, so `dev` is re-read from the model below and
+    # A checkpoint too large for one card is sharded across GPUs by accelerate.
+    # BLOOM_TARGET_DEVICE_MAP=auto turns that on; leave it unset for the single-GPU path the
+    # 3-4B targets use. Sharding moves the input device to wherever the embeddings landed and
+    # the logits to wherever lm_head landed, so `dev` is re-read from the model below and
     # _hf_poe_generate normalises the logits back onto it.
+    #
+    # "auto" alone would spread the target over EVERY visible card, including the one holding
+    # a local auditor -- and the auditor shares this process, so CUDA_VISIBLE_DEVICES cannot
+    # separate them. BLOOM_TARGET_GPUS=1,2,3 caps every other card at zero so accelerate
+    # leaves them alone, keeping the auditor's GPU free.
     device_map = (os.environ.get("BLOOM_TARGET_DEVICE_MAP", "") or "").strip() or None
     load_kw = dict(torch_dtype=torch.bfloat16, attn_implementation="sdpa")
+    max_memory = None
+    _gpus = (os.environ.get("BLOOM_TARGET_GPUS", "") or "").replace(" ", "")
+    if device_map and _gpus:
+        allowed = {int(x) for x in _gpus.split(",") if x}
+        frac = float(os.environ.get("BLOOM_TARGET_GPU_FRACTION", "0.92") or 0.92)
+        max_memory = {}
+        for i in range(torch.cuda.device_count()):
+            total = torch.cuda.get_device_properties(i).total_memory
+            max_memory[i] = f"{int(total * frac) // (1024 ** 3)}GiB" if i in allowed else "0GiB"
 
     def _load(repo: str):
         if device_map:
-            return AutoModelForCausalLM.from_pretrained(repo, device_map=device_map, **load_kw).eval()
+            return AutoModelForCausalLM.from_pretrained(
+                repo, device_map=device_map, max_memory=max_memory, **load_kw).eval()
         return AutoModelForCausalLM.from_pretrained(repo, **load_kw).to(dev).eval()
 
     mt = _load(target_hf)
