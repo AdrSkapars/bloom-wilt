@@ -231,7 +231,10 @@ def _load_hf_poe_models(target_hf: str, jail_hf: str, gpu_id: int, target_only: 
     _dtype = (os.environ.get("BLOOM_TARGET_DTYPE", "") or "").strip() or None
     _dtype = {"auto": "auto", "bfloat16": torch.bfloat16, "float16": torch.float16,
               "": None}.get(_dtype, _dtype) if _dtype else torch.bfloat16
-    load_kw = dict(torch_dtype=_dtype, attn_implementation="sdpa")
+    # sdpa suits the 3-4B targets, but not every architecture implements it -- DeepSeek-V4
+    # raises and asks for eager. BLOOM_TARGET_ATTN switches it without touching the default.
+    _attn = (os.environ.get("BLOOM_TARGET_ATTN", "") or "").strip() or "sdpa"
+    load_kw = dict(torch_dtype=_dtype, attn_implementation=_attn)
     max_memory = None
     _gpus = (os.environ.get("BLOOM_TARGET_GPUS", "") or "").replace(" ", "")
     if device_map and _gpus:
