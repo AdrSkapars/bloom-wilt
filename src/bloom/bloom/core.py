@@ -100,6 +100,11 @@ _USES_THINK_BLOCK = {
     "google/gemma-3-4b-it": False,
     "google/gemma-4-e4b-it": False,
     "redhatai/gemma-4-26b-a4b-it-fp8-dynamic": False,   # default AUDITOR (gemma-4 family = no auto think block); registered so the output_search judge can resolve its OWN think-prefix
+    # DeepSeek-V4 ships no chat template; prompts come from the jinja in prompts/ that
+    # mirrors encode_messages(thinking_mode="chat"), and chat mode emits the closed
+    # </think> itself -- so no prefill wrapper here. Quantised forks are separate keys.
+    "deepseek-ai/deepseek-v4-flash-0731": False,
+    "true2456/deepseek-v4-flash-0731-awq": False,
     # abliterated corruptor variants (same arch/vocab as their originals)
     "huihui-ai/huihui-qwen3.5-4b-abliterated": True,
     "huihui-ai/phi-4-mini-instruct-abliterated": False,
