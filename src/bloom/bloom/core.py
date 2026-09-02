@@ -102,9 +102,11 @@ _USES_THINK_BLOCK = {
     "redhatai/gemma-4-26b-a4b-it-fp8-dynamic": False,   # default AUDITOR (gemma-4 family = no auto think block); registered so the output_search judge can resolve its OWN think-prefix
     # DeepSeek-V4 ships no chat template; prompts come from the jinja in prompts/ that
     # mirrors encode_messages(thinking_mode="chat"), and chat mode emits the closed
-    # </think> itself -- so no prefill wrapper here. Quantised forks are separate keys.
+    # </think> itself -- so no prefill wrapper here. Use the original checkpoint: its
+    # experts are already FP4 (packed int8 + ue8m0 scales, 167GB) and transformers reads
+    # that natively, whereas the AWQ/W4A16 reforks target module names this architecture
+    # does not have and silently load as 568GB of bf16.
     "deepseek-ai/deepseek-v4-flash-0731": False,
-    "true2456/deepseek-v4-flash-0731-awq": False,
     # abliterated corruptor variants (same arch/vocab as their originals)
     "huihui-ai/huihui-qwen3.5-4b-abliterated": True,
     "huihui-ai/phi-4-mini-instruct-abliterated": False,
