@@ -195,12 +195,55 @@ else at 8, so that pool mixes draws. Note also that `prob_stats.mean` averaged o
 transcripts (70.50 % for β=0 round 1) is NOT the run summary's `tok_avg` (73.2 %) — they are
 different aggregations, so never mix them in one comparison.
 
-## 8. Next steps
+## 8. Selection results (2026-09-02, final for the day)
 
-- β=0.75 is unexplored and may sit at the floor with much more presence than 0.5 — the
-  frontier between 0.5 (18.0) and 1 (51.3) is where the action is.
-- Re-run the anchor at var_batch 8 so the band comparison is a clean draw. β=0.5 clears the
-  floor by only 1.2 pp, inside re-draw noise.
+Pools: vanilla 8 rounds, beta 0.5 and beta 1 five rounds each, 15 scenarios, seed 1.
+Anchor = vanilla's w=1 point (max presence per scenario, ties broken toward the more
+probable transcript). Band floor = anchor - 3 pp = 70.64 %.
+
+| arm | rounds | presence | prob | band |
+|---|---|---|---|---|
+| vanilla | 8 | 24.0 | 73.64 % | anchor |
+| beta 0.5 | 5 | 36.0 | 71.39 % | in |
+| **beta 1** | 5 | **38.7** | **70.79 %** | **in — deployed** |
+
+**beta 1 is the deployed beta: 38.7 vs vanilla's 24.0 at matched plausibility (1.6x), on
+5 rounds against vanilla's 8.** Plot: `selection_frontiers.png`, regenerate with
+`python -X utf8 experiments/bloom/deepseek_v4/selection_plot.py`.
+
+**The band verdict depends on pool depth, and a 1-round sweep gets it wrong.** beta 1's
+selected probability climbs 66.33 % (1 rd) -> 68.38 % (3 rd) -> 70.79 % (5 rd), while
+vanilla's P_ref rises 70.50 -> 72.73 -> 73.33 and then plateaus by round 3-5 (it runs out
+of presence-ties to break; beta 1 has real spread and keeps gaining). So at 1 round beta 1
+looks 8.7 pp outside the band and beta 0.5 is the only candidate; by 5 rounds beta 1 is
+inside AND wins. A cheap 1-round sweep is not merely noisier, it is **systematically biased
+toward low beta**. Use the paper's 5-round tuning config.
+
+Per-round figures (presence / tok_avg), which do NOT show this because there is no pooling:
+beta 0 ~11-19 @ ~72 %, beta 0.5 ~16-23 @ ~71-74 %, beta 1 ~35-53 @ ~61-67 %,
+beta 2 91.3 @ 55.8 % (1 round only).
+
+## 9. One round per process -- required
+
+Long-lived processes degrade badly. In a single process running 8 rounds of beta 0 then
+3 of beta 0.5, rounds 3 and 4 took 11-12 min each and round 5 took **47 min per chunk**
+with the GPU idling at 25 % / 118 W. Ruled out: auditor API (live test 30-50 tok/s),
+generation length (round 5's replies averaged 473 chars, same as rounds 1-4), thermal or
+power throttling (26-28 C, clocks pinned at max, throttle reasons 0x0), duplicate
+processes, disk. Re-running the identical round in a **fresh** process took 740 s.
+
+`sweep2.sh` therefore calls `run_arm.sh <beta> N` once per round -- resume-aware, so it
+reuses rounds 1..N-1 and generates only round N, at the cost of a 36 s model load. Steady
+timings after the change: 740 / 797 / 923 / 722 / 812 s. This has implications for
+`final_run.py`, which runs all 8 BoN rounds in one process.
+
+## 10. Next steps
+
+- **β=2 at 5 rounds.** β=1 had not converged at round 5 (+2.4 pp from round 3), so β=2
+  (91.3 presence at 1 round) may also enter the band with a full pool. That is the highest-
+  value next run and it is only ~5 rounds x ~14 min.
+- Vanilla 100 scenarios, seed 100, finals bank — queued but not started; ~40 min/round at
+  var_batch 15 (7 chunks), so ~5 h for 8 rounds.
 - `degeneracy.py` on β=2 before quoting 91.3 anywhere.
 - More rounds for real selection resolution; the 2-round frontier has only 6 distinct points.
 - `param_sweep.py` default `--increment` is 0.25 but the paper used **0.5** — pass it
