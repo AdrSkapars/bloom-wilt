@@ -170,14 +170,30 @@ Post-run selection on 2-round pools (β=0 and β=0.5 only):
 
 | arm | selection | presence | prob |
 |---|---|---|---|
-| β=0 | max presence per scenario (w=1) | 14.7 | 70.32 % (P_ref) |
+| β=0 | max presence per scenario (w=1) | 14.7 | 71.47 % (P_ref) |
 | β=0.5 | highest presence with prob ≥ P_ref | 24.7 | 72.17 % |
 
-β=0.5 strictly dominates — more presence *and* more probability. 24.7 is the frontier
-ceiling, so trading probability down buys nothing.
+β=0.5 strictly dominates — more presence *and* more probability, by 0.70 pp. 24.7 is the
+frontier ceiling, so trading probability down buys nothing.
+
+**Break presence-ties toward the higher probability.** `_best_of_pool` breaks them
+arbitrarily and reports P_ref as 70.32 %; tie-broken properly it is 71.47 %. Both arms have
+many ties (β=0 especially — its scores are nearly all at the floor), so this is not a
+rounding detail: it moved the margin from 1.85 pp to 0.70 pp.
+
+**Selected probability RISES with rounds, fastest for β=0.** Raw per-round probability
+drifts down (β=0 70.50 → 70.04, β=0.5 72.10 → 71.25) but selection more than cancels it:
+P_ref 70.50 → 71.47 (+0.98 pp/round), β=0.5 72.10 → 72.17 (+0.07). β=0 gains most precisely
+because its presence scores are nearly all tied at the floor, leaving the probability term
+free to break every tie. So the gap to a higher β **widens** with rounds rather than
+closing — adding rounds will not rescue β=1 (raw 66.33 %, 5.15 pp under the 2-round P_ref).
+Evidence is one extra round on two arms at n=15; measure β=1's own rate at 2-3 rounds
+before relying on it.
 
 Caveats: pools of 2 are thin (paper uses 5); β=0 round 1 ran at var_batch 15 and everything
-else at 8, so that pool mixes draws.
+else at 8, so that pool mixes draws. Note also that `prob_stats.mean` averaged over
+transcripts (70.50 % for β=0 round 1) is NOT the run summary's `tok_avg` (73.2 %) — they are
+different aggregations, so never mix them in one comparison.
 
 ## 8. Next steps
 
