@@ -202,6 +202,18 @@ def _load_hf_poe_models(target_hf: str, jail_hf: str, gpu_id: int, target_only: 
     tok = AutoTokenizer.from_pretrained(target_hf)
     tok_c = tok if same else AutoTokenizer.from_pretrained(jail_hf)
 
+    # Some checkpoints ship no chat template at all -- DeepSeek-V4 documents its format in
+    # encoding_dsv4.py instead -- and every prompt here is built with apply_chat_template.
+    # BLOOM_TARGET_CHAT_TEMPLATE names a .jinja to attach in that case. Only ever fills a
+    # gap: a checkpoint carrying its own template keeps it.
+    _tmpl_path = (os.environ.get("BLOOM_TARGET_CHAT_TEMPLATE", "") or "").strip()
+    if _tmpl_path:
+        _tmpl = Path(_tmpl_path).read_text(encoding="utf-8")
+        for _name, _t in (("target", tok), ("jail proposal", tok_c)):
+            if not getattr(_t, "chat_template", None):
+                _t.chat_template = _tmpl
+                print(f"[chat-template] attached {_tmpl_path} to the {_name} tokenizer", flush=True)
+
     # A checkpoint too large for one card is sharded across GPUs by accelerate.
     # BLOOM_TARGET_DEVICE_MAP=auto turns that on; leave it unset for the single-GPU path the
     # 3-4B targets use. Sharding moves the input device to wherever the embeddings landed and
