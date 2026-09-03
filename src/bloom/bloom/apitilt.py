@@ -150,11 +150,12 @@ class ApiTiltTarget:
                 "logprobs": [v for v in (lp.get("token_logprobs") or [])],
                 "finish_reason": ch.get("finish_reason")}
 
-    def _echo(self, prompt) -> Dict:
+    def _echo(self, prompt, logprobs: int = 1) -> Dict:
         """echo=true + max_tokens=0 — teacher-forced scoring of a supplied sequence.
-        `prompt` is a string or a list of token ids."""
+        `prompt` is a string or a list of token ids. `logprobs` also asks for that many
+        ALTERNATIVES per position (Fireworks caps it at 5)."""
         r = self._post({"model": self.model, "prompt": prompt,
-                        "max_tokens": 0, "echo": True, "logprobs": 1})
+                        "max_tokens": 0, "echo": True, "logprobs": int(logprobs)})
         self.n_prompt_tokens += int((r.get("usage") or {}).get("prompt_tokens") or 0)
         return r["choices"][0].get("logprobs") or {}
 
@@ -190,6 +191,33 @@ class ApiTiltTarget:
                 f"(sent {len(pre)}+{n}, got {len(ids)}). The provider is re-tokenizing an "
                 f"id-array prompt; this engine needs one that does not.")
         return [float(v) for v in lps[-n:]]
+
+    def score_ids_topk(self, prefix: str, cont_ids: List[int], top_k: int = 5) -> Dict:
+        """Like `score_ids`, but also returns the top-`top_k` ALTERNATIVES at each position.
+
+        `top_logprobs[i]` is the distribution that predicted token i, as a
+        {token_string: logprob} dict — the provider returns no ids for the alternatives, so
+        they are compared as strings. The sampled token is often NOT among its own top-k;
+        that is the interesting case, not an error.
+
+        Returns {"tokens", "lp", "top"} over the continuation only, where `top[j]` is a list
+        of (token_string, logprob) sorted most-likely first.
+        """
+        n = len(cont_ids)
+        if n == 0:
+            return {"tokens": [], "lp": [], "top": []}
+        pre = self.prefix_ids(prefix)
+        lp = self._echo(list(pre) + list(cont_ids), logprobs=int(top_k))
+        ids = list(lp.get("token_ids") or [])
+        if len(ids) != len(pre) + n or ids[-n:] != list(cont_ids):
+            raise RuntimeError(
+                f"api_tilt top-k scoring did not echo the supplied token ids back unchanged "
+                f"(sent {len(pre)}+{n}, got {len(ids)}).")
+        tl = list(lp.get("top_logprobs") or [])
+        top = [sorted((d or {}).items(), key=lambda kv: -kv[1]) for d in tl[-n:]]
+        return {"tokens": list(lp.get("tokens") or [])[-n:],
+                "lp": [float(v) for v in list(lp.get("token_logprobs") or [])[-n:]],
+                "top": top}
 
     def stats(self) -> str:
         return (f"{self.n_calls} calls, {self.n_prompt_tokens} prompt tok, "
