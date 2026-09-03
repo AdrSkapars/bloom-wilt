@@ -162,6 +162,37 @@ but only mildly: the contexts largely agree on the *candidate set* (3.6–3.7 of
 and differ mainly in how they *rank* it. The ~1% of positions with disjoint top-5s are
 where a top-5 reconstruction of `b1·ℓ_target + b2·ℓ_jail` has no shared support at all.
 
+### Top-k probability mass
+
+`top5_mass.py` — how much of each distribution the 5 returned alternatives actually cover.
+Mean cumulative mass:
+
+| k | target-only tokens<br>target / elicited | elicited-only tokens<br>target / elicited |
+|---|---|---|
+| 1 | 79.11% / 67.33% | 68.32% / 69.68% |
+| 2 | 91.42% / 81.94% | 82.20% / 83.71% |
+| 3 | 95.39% / 87.94% | 88.02% / 89.37% |
+| 4 | 97.15% / 91.12% | 91.13% / 92.35% |
+| 5 | **98.07% / 93.06%** | **93.03% / 94.15%** |
+
+The mean flatters it — the distribution is very skewed. Median top-5 mass is 98–99.9%, but
+the 10th percentile is 78–94% and the worst positions fall to 33–57%. Positions where the
+top-5 hold under 95% of the mass: 11.7% (target along its own tokens) up to 36.7%.
+
+Each context is sharper along its own trajectory: on target-only tokens the target's top-5
+covers 98.07% against the elicited context's 93.06%; on elicited-only tokens the two are
+level (93.03% / 94.15%).
+
+**The binding constraint is the intersection, not the coverage.** A tilt reconstructed from
+two top-5 lists can only be evaluated on tokens present in *both* — and each context puts
+only **84–91%** of its mass there. So ~9–16% of the distribution is unusable regardless of
+how well top-5 covers either context alone:
+
+| | target-only tokens | elicited-only tokens |
+|---|---|---|
+| shared-token mass, target ctx | 91.14% | 84.41% |
+| shared-token mass, elicited ctx | 85.92% | 85.81% |
+
 ## Next
 
 The top-5 approximation itself: reconstruct the tilt from these 5-alternative lists and
