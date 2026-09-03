@@ -757,7 +757,11 @@ async def run_rollout(cfg: DotDict, prompts_yaml: Dict, output_dir: Path,
     # A hosted-API target exposes no logits, so every method that steers or searches over the
     # target's distribution would silently degrade to plain sampling on the async path below —
     # the run completes and reports scores computed over unsteered transcripts. Fail loudly.
-    if not cfg.rollout.target.startswith("local/"):
+    # `api/<model>` = hosted target driven by the api_tilt engine. It CAN run
+    # jailbroken_output (only at the two mixing-free corners of the tilt -- apitilt.py refuses
+    # the rest), so it routes to the batched-local path below rather than tripping this guard.
+    _target_is_api = cfg.rollout.target.startswith("api/")
+    if not cfg.rollout.target.startswith("local/") and not _target_is_api:
         _needs_logits = [_n for _n in ("jailbroken_output", "tokbias_output", "search_output",
                                        "search_input", "flrt_search_input")
                          if bool((cfg.get(_n, {}) or {}).get("enabled", False))]
@@ -769,7 +773,7 @@ async def run_rollout(cfg: DotDict, prompts_yaml: Dict, output_dir: Path,
 
     # Dispatch on the TARGET (not evaluator): corruption/search need the target's logits.
     # The evaluator may still be a hosted API model via ApiModel.
-    if cfg.rollout.target.startswith("local/"):
+    if cfg.rollout.target.startswith("local/") or _target_is_api:
         return run_rollout_batched_local(
             cfg, prompts_yaml, output_dir,
             understanding_results, ideation_results, variations_override,
@@ -900,12 +904,26 @@ def run_rollout_batched_local(
     # Two jail engines, mirroring corruption: vllm_topk (legacy top-K logit_bias,
     # the current default) and hf_full (exact full-vocab PoE via HF, basic rollout
     # PoE only — no search-loss integration).
-    jail_engine = str(jail_cfg.get("engine", "vllm_topk"))
-    if need_jail_model and jail_engine not in ("vllm_topk", "hf_full"):
+    # `api/<model>` target: no local weights exist, so the engine is api_tilt regardless of
+    # what the cfg says. It reproduces exactly the two corners of the tilt that need no
+    # logit mixing (b1=1,b2=0 and b1=0,b2!=0) and refuses the rest -- see bloom/apitilt.py.
+    target_is_api = target_model_id.startswith("api/")
+    jail_engine = "api_tilt" if target_is_api else str(jail_cfg.get("engine", "vllm_topk"))
+    if need_jail_model and jail_engine not in ("vllm_topk", "hf_full", "api_tilt"):
         raise RuntimeError(
-            f"jailbroken_output.engine={jail_engine!r} not supported (vllm_topk | hf_full)")
+            f"jailbroken_output.engine={jail_engine!r} not supported (vllm_topk | hf_full | api_tilt)")
+    if target_is_api:
+        _api_conflicts = [_n for _n in ("search_input", "search_output", "flrt_search_input",
+                                        "tokbias_output")
+                          if bool((cfg.get(_n, {}) or {}).get("enabled", False))]
+        if _api_conflicts:
+            raise RuntimeError(
+                f"rollout.target={target_model_id!r} is a hosted api/ target: it exposes no "
+                f"logits or tokenizer, so token-level search is impossible. Disable: "
+                + ", ".join(_api_conflicts))
     jail_vllm = need_jail_model and jail_engine == "vllm_topk"
     jail_hf   = need_jail_model and jail_engine == "hf_full"
+    jail_api  = need_jail_model and jail_engine == "api_tilt"
 
     # ── FLRT-in (flrt_search_input): needs the target + self-jail teacher as HF models for the
     # full-vocab distillation loss. They are loaded INDEPENDENTLY below (a separate handle,
@@ -941,10 +959,13 @@ def run_rollout_batched_local(
         # mode — plain target sampling, no jail model stepped, no naturalness floor. Reuses the
         # jail path's free on-policy token-prob capture; the proposal model mirrors the target and
         # is never stepped.
-        jail_cfg = {"model": target_model_id, "enabled": True, "engine": "hf_full",
+        jail_cfg = {"model": target_model_id, "enabled": True,
+                    "engine": ("api_tilt" if target_is_api else "hf_full"),
                     "b2": 0.0, "b1": 1.0, "target_floor": 0.0, "target_only": True}
-        jail_use_rollout = True; jail_on = True; jail_engine = "hf_full"
-        jail_vllm = False; jail_hf = True
+        jail_use_rollout = True; jail_on = True
+        jail_engine = "api_tilt" if target_is_api else "hf_full"
+        jail_vllm = False
+        jail_hf = not target_is_api; jail_api = target_is_api
         need_jail_model = True   # this path loads the hf_full target model (target_only); must NOT skip the load
 
     # vllm_topk jail proposals share the target GPU (halve its util so both fit). hf_full
@@ -989,7 +1010,7 @@ def run_rollout_batched_local(
     # In hf_full corruption mode the target runs as an HF model (loaded below); no
     # vLLM target worker is spawned.
     lm_target = None
-    if not jail_hf:
+    if not jail_hf and not jail_api:
         lm_target = _get_local_model(target_model_id[len("local/"):],
                                      gpu_id=target_gpu_id,
                                      gpu_memory_utilization=target_gpu_util,
@@ -1001,7 +1022,15 @@ def run_rollout_batched_local(
         jail_model_id = (jail_cfg.get("model", "") or "").strip()
         if jail_model_id in ("", "self", "local/self"):
             jail_model_id = target_model_id      # self-jail: proposal model = the target model
-        if not jail_model_id.startswith("local/"):
+        if target_is_api:
+            # One model per request: the jail context is the SAME hosted model under a
+            # different system prompt (self-jail), which is what WILT uses anyway.
+            if jail_model_id != target_model_id:
+                raise RuntimeError(
+                    f"an api/ target supports self-jail only (the API serves one model per "
+                    f"request), but jailbroken_output.model={jail_model_id!r} differs from the "
+                    f"target {target_model_id!r}. Leave BLOOM_JAIL_MODEL equal to the target.")
+        elif not jail_model_id.startswith("local/"):
             raise RuntimeError(
                 f"jailbroken_output.model must start with 'local/' (or be 'self'/'' for self-jail), got {jail_model_id!r}"
             )
@@ -1053,6 +1082,12 @@ def run_rollout_batched_local(
                                        max_model_len=target_max_len)
             print(f"  [jailbroken_output] engine={jail_engine} loaded {jail_model_id} on GPU {target_gpu_id} "
                   f"(b2={jail_runtime_cfg['b2']})", flush=True)
+        elif jail_api:  # api_tilt -- no weights; one hosted-model handle for both contexts
+            from .apitilt import load_api_target
+            jail_runtime_cfg["hf"] = load_api_target(target_model_id)
+            print(f"  [jailbroken_output] engine=api_tilt target={target_model_id} "
+                  f"(b1={jail_runtime_cfg['b1']}, b2={jail_runtime_cfg['b2']}, "
+                  f"floor={jail_runtime_cfg['target_floor']})", flush=True)
         else:  # hf_full — load HF target + jail in-process on the target GPU
             jail_runtime_cfg["hf"] = _load_hf_poe_models(
                 target_model_id[len("local/"):], jail_model_id[len("local/"):], target_gpu_id,
@@ -1138,7 +1173,7 @@ def run_rollout_batched_local(
     # jail_hf + jail_use_rollout), but its search runs in the SERIAL rollout path (where the
     # flrt fork lives). So exclude flrt_on here, else the batched-jail path would produce plain
     # BoN replies and never run the FLRT search.
-    jail_batched = (jail_hf and jail_use_rollout
+    jail_batched = ((jail_hf or jail_api) and jail_use_rollout
                     and not input_search_on and not output_search_on and not flrt_on)
     # Batched INPUT-SEARCH eligibility: pure input_search (no output_search) rolls variations
     # out in LOCKSTEP, running each turn's Phase-1 messages, self-jail TRS rewards, and target
@@ -1324,7 +1359,7 @@ def run_rollout_batched_local(
                 active = [sd for sd in chunk if not sd["done"]]
                 if not active:
                     break
-                jail_results = _jail_generate_hf(
+                jail_results = jail_generate(
                     _jail_hf, jail_runtime_cfg,
                     [sd["target_msgs"] for sd in active], target_max_tokens, temperature, no_think_target,
                 )
@@ -1344,6 +1379,9 @@ def run_rollout_batched_local(
                         tmsg["gen_token_probs"] = _tprobs      # on-policy probs (plausibility)
                     if _tprobs:
                         tmsg["prob_stats"] = _prob_summary(_tprobs)  # summary valid even when parse strips channel/reasoning markers (e.g. gemma-4)
+                    _jprobs = _jr.get("best_token_probs_jail")       # api_tilt elicited-only: probs under the JAIL context the tokens were drawn from
+                    if _jprobs and target_resp == raw_target:
+                        tmsg["gen_token_probs_jail"] = _jprobs
                     if target_reason:
                         tmsg["reasoning"] = target_reason
                     sd["transcript_msgs"].append(tmsg)
@@ -1738,7 +1776,7 @@ def run_rollout_batched_local(
                 if not active:
                     break
                 # ④ BATCH the plain HF target reply (self-jail hf_full pair, target_only BoN).
-                jail_results = _jail_generate_hf(
+                jail_results = jail_generate(
                     _jail_hf, jail_runtime_cfg,
                     [sd["target_msgs"] for sd in active], target_max_tokens, temperature, no_think_target)
                 for sd, _jr in zip(active, jail_results):
@@ -1971,7 +2009,7 @@ def run_rollout_batched_local(
                 elif (jail_runtime_cfg is not None
                         and jail_runtime_cfg.get("enabled", False)):
                     if jail_runtime_cfg.get("engine") == "hf_full":
-                        _jr = _jail_generate_hf(
+                        _jr = jail_generate(
                             jail_runtime_cfg["hf"], jail_runtime_cfg,
                             [target_msgs], target_max_tokens, temperature, no_think_target,
                         )[0]

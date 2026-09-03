@@ -10,7 +10,7 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 REPO = "deepseek-ai/DeepSeek-V4-Flash-0731"
-D = "/workspace/bloom-wilt/experiments/bloom/runs_dsv4/self_harm/deepseek_v4_flash/vanilla_15s/round_1"
+D = "/workspace/bloom-wilt/experiments/postpaper/runs_dsv4/self_harm/deepseek_v4_flash/vanilla_15s/round_1"
 TARGET_MAX_TOKENS = 250
 
 tok = AutoTokenizer.from_pretrained(REPO)

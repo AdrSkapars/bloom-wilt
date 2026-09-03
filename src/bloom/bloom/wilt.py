@@ -626,6 +626,24 @@ def _jail_generate_hf(hf: Dict, jail_runtime_cfg: Dict,
     return out
 
 
+def jail_generate(handle: Dict, jail_runtime_cfg: Dict,
+                  target_msgs_batch: List[List[Dict]], max_tokens: int,
+                  temperature: float, no_think_target: bool) -> List[Dict]:
+    """Engine dispatch for the jail/BoN target step.
+
+    `hf_full` steps the weights locally (exact full-vocab PoE); `api_tilt` runs the two
+    mixing-free corners of the tilt over a hosted /completions API (see bloom/apitilt.py).
+    Both take the same arguments and return the same per-scenario dicts, so callers stay
+    engine-agnostic.
+    """
+    if str(jail_runtime_cfg.get("engine", "")) == "api_tilt":
+        from .apitilt import _jail_generate_api
+        return _jail_generate_api(handle, jail_runtime_cfg, target_msgs_batch,
+                                  max_tokens, temperature, no_think_target)
+    return _jail_generate_hf(handle, jail_runtime_cfg, target_msgs_batch,
+                             max_tokens, temperature, no_think_target)
+
+
 def _contrastive_sample_extensions(
     lm_target: "LocalModel",
     lm_jail: "LocalModel",
@@ -735,4 +753,4 @@ def _contrastive_sample_extensions(
         out.append([sampled_tokens[i * n + j] for j in range(n)])
     return out
 
-__all__ = ['_jail_generate_trs', '_jail_generate_trs_batch', 'batch_generate_contrastive_local', '_load_hf_poe_models', '_TOKBIAS_CACHE', '_tokbias_vector', '_hf_poe_generate', '_jail_generate_hf', '_contrastive_sample_extensions']
+__all__ = ['_jail_generate_trs', '_jail_generate_trs_batch', 'batch_generate_contrastive_local', '_load_hf_poe_models', '_TOKBIAS_CACHE', '_tokbias_vector', '_hf_poe_generate', '_jail_generate_hf', 'jail_generate', '_contrastive_sample_extensions']

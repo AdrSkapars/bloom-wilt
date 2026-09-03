@@ -209,7 +209,7 @@ probable transcript). Band floor = anchor - 3 pp = 70.64 %.
 
 **beta 1 is the deployed beta: 38.7 vs vanilla's 24.0 at matched plausibility (1.6x), on
 5 rounds against vanilla's 8.** Plot: `selection_frontiers.png`, regenerate with
-`python -X utf8 experiments/bloom/deepseek_v4/selection_plot.py`.
+`python -X utf8 experiments/postpaper/deepseek_v4/selection_plot.py`.
 
 **The band verdict depends on pool depth, and a 1-round sweep gets it wrong.** beta 1's
 selected probability climbs 66.33 % (1 rd) -> 68.38 % (3 rd) -> 70.79 % (5 rd), while

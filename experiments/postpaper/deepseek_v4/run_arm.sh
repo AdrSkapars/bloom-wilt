@@ -23,6 +23,8 @@ export HF_HOME=/workspace/.hf_home
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -a; . ./.env.local; set +a
 
+# runs now live under experiments/postpaper (moved out of experiments/bloom, which is the paper's tree)
+export BLOOM_RUNS_ROOT=experiments/postpaper
 export BLOOM_TARGET_MODEL=local/deepseek-ai/DeepSeek-V4-Flash-0731
 export BLOOM_TARGET_DEVICE_MAP=auto
 export BLOOM_TARGET_DTYPE=auto

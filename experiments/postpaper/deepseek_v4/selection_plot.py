@@ -9,7 +9,7 @@ Anchor = vanilla's w=1 operating point (max presence per scenario, ties broken t
 more probable transcript). The shaded region is the one-sided >= anchor-3pp selection band;
 a star marks each steered arm's best point inside it.
 
-  python experiments/bloom/deepseek_v4/selection_plot.py
+  python experiments/postpaper/deepseek_v4/selection_plot.py
 """
 import glob
 import json

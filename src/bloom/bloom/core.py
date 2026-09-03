@@ -107,6 +107,10 @@ _USES_THINK_BLOCK = {
     # that natively, whereas the AWQ/W4A16 reforks target module names this architecture
     # does not have and silently load as 568GB of bf16.
     "deepseek-ai/deepseek-v4-flash-0731": False,
+    # ...and the same weights served over a hosted API (engine=api_tilt). Registered under
+    # the provider's own model path because that is what the target id carries.
+    "accounts/fireworks/models/deepseek-v4-flash-0731": False,
+    "deepseek-ai/deepseek-v4-flash-0731-api": False,   # together.ai names it this way
     # abliterated corruptor variants (same arch/vocab as their originals)
     "huihui-ai/huihui-qwen3.5-4b-abliterated": True,
     "huihui-ai/phi-4-mini-instruct-abliterated": False,
@@ -117,10 +121,12 @@ _THINK_PREFILL = "<think>\n\n</think>\n"
 
 
 def normalize(name: str) -> str:
-    """Lowercase and strip the 'local/' engine prefix used in cfg model ids."""
+    """Lowercase and strip the engine prefix used in cfg model ids ('local/' or 'api/')."""
     n = (name or "").strip()
-    if n.startswith("local/"):
-        n = n[len("local/"):]
+    for _pfx in ("local/", "api/"):
+        if n.startswith(_pfx):
+            n = n[len(_pfx):]
+            break
     return n.lower()
 
 
