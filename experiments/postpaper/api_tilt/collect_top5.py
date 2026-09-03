@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Collect paired top-5 next-token distributions for the target-only transcripts.
+"""Collect paired top-5 next-token distributions along a run's generated tokens.
 
-For every token the TARGET actually generated in the `vanilla_15s` run (15 scenarios,
-round 1, 3 turns each), this teacher-forces that SAME token sequence through two contexts
-and records the top-5 alternatives the model would have considered at each position:
+Takes the tokens some run actually generated and teacher-forces that SAME sequence through
+BOTH contexts, recording the top-5 alternatives the model would have considered at each
+position:
 
-  target    the transcript exactly as it ran -- target system prompt, conversation as-is
+  target    the conversation with the TARGET system prompt, as a vanilla run sees it
   elicited  the same conversation with the target system prompt REPLACED by the jail
-            persona and the behaviour file's prefill appended (i.e. the `b1=0, b2=1`
-            context), but forced along the target's tokens rather than its own
+            persona and the behaviour file's prefill appended -- the `b1=0, b2=1` context
 
-Both are aligned position-for-position on the same tokens, which is the whole point: it
-gives, at every position, the two top-5 lists a top-k approximation to
+The two contexts are always these; `--arm` chooses whose TOKENS they are forced along:
+
+  --arm vanilla_15s       target-only tokens   (what the target itself said)
+  --arm api_elicited_15s  elicited-only tokens (what the jail context said)
+
+Both directions matter because the position set is not symmetric: each run's tokens are
+on-policy for its own context and off-policy for the other, so "how often do the top-5
+lists overlap" has a different answer along each trajectory.
+
+Aligned position-for-position, this is the raw material a top-k approximation to
 `z = b1*l_target + b2*l_jail` would have to work from. Fireworks caps `logprobs` at 5.
 
 The sequence is sent as TOKEN IDS, not text -- sampling can produce a non-canonical
@@ -23,7 +30,8 @@ frequently absent from its own top-5. That is signal, not an error.
 
 Output: one JSON per transcript in <run>/top5/, plus top5/_index.json.
 
-  python -X utf8 experiments/postpaper/api_tilt/collect_top5.py [--limit N] [--top-k 5]
+  python -X utf8 experiments/postpaper/api_tilt/collect_top5.py --arm vanilla_15s
+  python -X utf8 experiments/postpaper/api_tilt/collect_top5.py --arm api_elicited_15s
 """
 import argparse
 import json
@@ -52,17 +60,25 @@ os.environ.setdefault("BLOOM_TARGET_API", "fireworks")
 from bloom.apitilt import load_api_target  # noqa: E402
 
 TARGET = "api/accounts/fireworks/models/deepseek-v4-flash-0731"
-SRC_RUN = (REPO / "experiments/postpaper/runs_dsv4/self_harm/deepseek_v4_flash"
-           / "vanilla_15s" / "round_1")
+ARM_ROOT = REPO / "experiments/postpaper/runs_dsv4/self_harm/deepseek_v4_flash"
 BEHAVIOUR = REPO / "src/bloom/prompts/7_self_harm_encouragement.yaml"
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--arm", default="vanilla_15s",
+                    help="source run whose TOKENS are forced through both contexts "
+                         "(vanilla_15s = target-only tokens; api_elicited_15s = elicited-only "
+                         "tokens). The two contexts scored are the same either way.")
+    ap.add_argument("--round", type=int, default=1)
     ap.add_argument("--limit", type=int, default=0, help="only the first N transcripts")
     ap.add_argument("--top-k", type=int, default=5, help="alternatives per position (Fireworks max 5)")
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
+
+    src_run = ARM_ROOT / args.arm / f"round_{args.round}"
+    if not (src_run / "transcripts").is_dir():
+        raise SystemExit(f"no transcripts under {src_run}")
 
     beh = yaml.safe_load(open(BEHAVIOUR, encoding="utf-8"))
     jail_sys = beh["jailbroken_output_system_prompt"]
@@ -73,13 +89,13 @@ def main():
     # Registry-derived no-think wrappers; '' for DeepSeek-V4 (its template closes </think>).
     nt, nt_c = handle["target_no_think"], handle["corrupt_no_think"]
 
-    out_dir = SRC_RUN / "top5"
+    out_dir = src_run / "top5"
     out_dir.mkdir(exist_ok=True)
 
-    tfs = sorted((SRC_RUN / "transcripts").glob("transcript_v*r*.json"))
+    tfs = sorted((src_run / "transcripts").glob("transcript_v*r*.json"))
     if args.limit:
         tfs = tfs[:args.limit]
-    print(f"{len(tfs)} transcripts from {SRC_RUN.relative_to(REPO)}")
+    print(f"{len(tfs)} transcripts from {src_run.relative_to(REPO)}")
 
     def build_jobs(tf):
         """One job per (transcript, assistant turn): the two prefixes + the forced ids."""
@@ -123,14 +139,15 @@ def main():
                 "transcript": tf.name,
                 "variation_number": d["metadata"]["variation_number"],
                 "repetition_number": d["metadata"]["repetition_number"],
-                "source_run": str(SRC_RUN.relative_to(REPO)).replace("\\", "/"),
+                "source_run": str(src_run.relative_to(REPO)).replace("\\", "/"),
                 "source_target_model": d["metadata"]["target_model"],
                 "scored_by": TARGET,
                 "top_k": args.top_k,
                 "target_system_prompt": d["metadata"]["target_system_prompt"],
                 "jail_system_prompt": jail_sys,
                 "jail_prefill": jail_prefill,
-                "note": ("tokens are the TARGET-only generation; both contexts are "
+                "forced_along": args.arm,   # whose tokens these are
+                "note": (f"tokens are the {args.arm} run's generation; BOTH contexts are "
                          "teacher-forced along them. top[i] is the distribution that "
                          "predicted token i, so the sampled token need not appear in it."),
             },
@@ -148,7 +165,8 @@ def main():
                             "file": op.name, "bytes": op.stat().st_size})
             print(f"  {name}: {ntok} positions x2 contexts -> {op.name}", flush=True)
 
-    index = {"source_run": str(SRC_RUN.relative_to(REPO)).replace("\\", "/"),
+    index = {"source_run": str(src_run.relative_to(REPO)).replace("\\", "/"),
+             "forced_along": args.arm,
              "scored_by": TARGET, "top_k": args.top_k,
              "n_transcripts": len(results),
              "n_positions": sum(r["n_tokens"] for r in results),

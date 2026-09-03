@@ -78,9 +78,10 @@ Fireworks echo endpoint:
   decoding — impossible here. The elicited-only corner is defined without a target term
   anyway, so it runs floor-off, and unfloored pure-jail sampling does reach tokens at
   ~0% target probability.
-* **Serving precision differs** from the local FP4 load: expect API plausibility ~1 pp low.
+* **Serving numerics differ** from the local FP4 load: expect API plausibility ~1 pp low.
   Low-probability tokens diverge most in relative terms, so **min**-token statistics are
-  less comparable across engines than means.
+  less comparable across engines than means. Part of that gap is the decode-vs-prefill
+  difference below rather than quantisation as such.
 * Everything else is matched deliberately: same kickoff bank (so identical scenarios *and*
   identical turn-1 kickoffs), 15 scenarios, seed 1, 3 turns, temperature 1.0,
   `target_max_tokens=250`.
@@ -91,10 +92,77 @@ Fireworks echo endpoint:
 `/completions` serving the model, `echo=true` + `max_tokens=0` scoring, per-token logprobs,
 and an integer-array prompt. Together is registered but unverified on the last point.
 
+## Generation and echo are not the same forward pass
+
+Measured directly (same prompt, same model, 60 tokens):
+
+| | mean \|diff\| | max |
+|---|---|---|
+| echo vs echo | **0.0000 pp** (bit-identical, deterministic) | 0.000 pp |
+| generation vs echo | **2.10 pp** | 20.8 pp |
+
+The incremental-decode path and the single-pass prefill/echo path produce numerically
+different logits, in both directions, uniformly across positions. Consequences:
+
+* Everything in the top-5 datasets comes from the **echo** path, so it is internally
+  consistent, deterministic and re-runnable.
+* `best_token_probs` (the reported plausibility) is echo-derived — `score_ids` — on the
+  elicited path, and so is comparable to the top-5 data.
+* `gen_token_probs_jail` stored in the elicited transcripts is **generation**-derived, so
+  it is *not* directly comparable to echo numbers (mean 2.3 pp apart, max 26 pp). Re-score
+  it through `score_ids` if you need it on the same footing.
+* Target-only plausibility comes from the generation call by construction (the tokens were
+  drawn from that very distribution), so vanilla's numbers are on the generation path.
+
+This is why the elicited-direction dataset validates so cleanly on one column and not the
+other: `target.lp` reproduces the run's stored target probs to 5e-5 pp (echo vs echo),
+while `elicited.lp` differs from the stored jail probs (echo vs generation).
+
+## Paired top-5 datasets
+
+`collect_top5.py` teacher-forces a run's generated tokens through **both** contexts and
+records the top-5 alternatives at every position. `--arm` chooses whose tokens:
+
+```bash
+python -X utf8 experiments/postpaper/api_tilt/collect_top5.py --arm vanilla_15s
+python -X utf8 experiments/postpaper/api_tilt/collect_top5.py --arm api_elicited_15s
+python -X utf8 experiments/postpaper/api_tilt/top5_overlap.py  --arm vanilla_15s
+```
+
+Output: `<run>/round_1/top5/transcript_vNrM.top5.json` + `_index.json`. Per turn, parallel
+arrays indexed by position:
+
+```
+token_ids[i], tokens[i]           the token that run emitted
+target.lp[i],   target.top[i]     top[i] = [[token_string, logprob] x 5], most likely first
+elicited.lp[i], elicited.top[i]
+```
+
+`top[i]` is the distribution that **predicted** token `i`, so the emitted token is often
+absent from it. Alternatives carry no token ids, only strings, so set overlap is computed
+on strings. Both directions verified: every one of the 45 turns per arm echoes the source
+run's `gen_token_ids` back unchanged.
+
+### Headline
+
+| | target-only tokens | elicited-only tokens |
+|---|---|---|
+| positions | 5164 | 3603 |
+| mean \|top5 ∩ top5\| | 3.72 / 5 | 3.61 / 5 |
+| identical top-5 sets | 22.5% | 18.7% |
+| disjoint top-5 sets | 1.2% | 1.0% |
+| same top-1 token | 74.1% | 71.7% |
+| emitted token in target's top-5 | 97.2% | 84.6% |
+| emitted token in elicited's top-5 | 91.0% | 92.3% |
+| p(emitted) under target | 69.58% | 51.00% |
+| p(emitted) under elicited | 55.65% | 58.96% |
+
+Each run's own context is the more generous one along its own trajectory, as it must be —
+but only mildly: the contexts largely agree on the *candidate set* (3.6–3.7 of 5 shared)
+and differ mainly in how they *rank* it. The ~1% of positions with disjoint top-5s are
+where a top-5 reconstruction of `b1·ℓ_target + b2·ℓ_jail` has no shared support at all.
+
 ## Next
 
-The point of this path is the **top-5 approximation**: Fireworks caps `top_logprobs` at 5,
-so the tilt can only ever be approximated from the 5 alternatives returned per position.
-The data needed for that is one `logprobs: 5` change away on the calls this engine already
-makes — the stored transcripts also carry `gen_token_probs_jail` (probabilities under the
-jail context the tokens were drawn from) alongside the usual target-context ones.
+The top-5 approximation itself: reconstruct the tilt from these 5-alternative lists and
+measure how far it lands from the true full-vocab tilt (`jail_b1` locally).

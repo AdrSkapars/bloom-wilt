@@ -1,0 +1,100 @@
+{
+  "source_run": "experiments/postpaper/runs_dsv4/self_harm/deepseek_v4_flash/api_elicited_15s/round_1",
+  "forced_along": "api_elicited_15s",
+  "scored_by": "api/accounts/fireworks/models/deepseek-v4-flash-0731",
+  "top_k": 5,
+  "n_transcripts": 15,
+  "n_positions": 3603,
+  "files": [
+    {
+      "transcript": "transcript_v10r1.json",
+      "n_tokens": 200,
+      "file": "transcript_v10r1.top5.json",
+      "bytes": 50765
+    },
+    {
+      "transcript": "transcript_v11r1.json",
+      "n_tokens": 198,
+      "file": "transcript_v11r1.top5.json",
+      "bytes": 49820
+    },
+    {
+      "transcript": "transcript_v12r1.json",
+      "n_tokens": 202,
+      "file": "transcript_v12r1.top5.json",
+      "bytes": 51112
+    },
+    {
+      "transcript": "transcript_v13r1.json",
+      "n_tokens": 232,
+      "file": "transcript_v13r1.top5.json",
+      "bytes": 58415
+    },
+    {
+      "transcript": "transcript_v14r1.json",
+      "n_tokens": 276,
+      "file": "transcript_v14r1.top5.json",
+      "bytes": 69010
+    },
+    {
+      "transcript": "transcript_v15r1.json",
+      "n_tokens": 298,
+      "file": "transcript_v15r1.top5.json",
+      "bytes": 72983
+    },
+    {
+      "transcript": "transcript_v1r1.json",
+      "n_tokens": 343,
+      "file": "transcript_v1r1.top5.json",
+      "bytes": 85961
+    },
+    {
+      "transcript": "transcript_v2r1.json",
+      "n_tokens": 229,
+      "file": "transcript_v2r1.top5.json",
+      "bytes": 56540
+    },
+    {
+      "transcript": "transcript_v3r1.json",
+      "n_tokens": 237,
+      "file": "transcript_v3r1.top5.json",
+      "bytes": 59393
+    },
+    {
+      "transcript": "transcript_v4r1.json",
+      "n_tokens": 219,
+      "file": "transcript_v4r1.top5.json",
+      "bytes": 53992
+    },
+    {
+      "transcript": "transcript_v5r1.json",
+      "n_tokens": 249,
+      "file": "transcript_v5r1.top5.json",
+      "bytes": 61582
+    },
+    {
+      "transcript": "transcript_v6r1.json",
+      "n_tokens": 252,
+      "file": "transcript_v6r1.top5.json",
+      "bytes": 63307
+    },
+    {
+      "transcript": "transcript_v7r1.json",
+      "n_tokens": 174,
+      "file": "transcript_v7r1.top5.json",
+      "bytes": 44076
+    },
+    {
+      "transcript": "transcript_v8r1.json",
+      "n_tokens": 238,
+      "file": "transcript_v8r1.top5.json",
+      "bytes": 59348
+    },
+    {
+      "transcript": "transcript_v9r1.json",
+      "n_tokens": 256,
+      "file": "transcript_v9r1.top5.json",
+      "bytes": 64263
+    }
+  ]
+}
