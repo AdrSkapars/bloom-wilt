@@ -208,6 +208,9 @@ cfg = DotDict({
         "target_floor": 1e-4,                     # naturalness floor ON by default: mask tokens with target prob < floor before sampling the tilt (argmax(target) fallback). 0 = off (no-floor ablation only).
         "b1": 1,                                  # target-term weight in z = b1*target + b2*jail - b3*neg (default 1). 0 = floor-only jail (drop the target term). None also accepted (legacy code path; numerically identical to 1). The cfg.tokbias_output baseline works at any b1.
         "b2": 4.0,                                # jail-expert weight in z = b1*target + b2*jail - b3*neg (PoE weight on log p_jailbroken); only used when enabled=True. Tuned per (model, behaviour) — the sweep sets it via BLOOM_JAIL_BETA.
+        "api_rule": "corner",                     # api_tilt engine ONLY (inert on hf_full/vllm_topk). "corner" = the two mixing-free tilt points (b1=1,b2=0 or b1=0,b2!=0). "overlap" = per-token decode taking the elicited-best member of the two top-k candidate sets' intersection, falling back to a plain target sample when they are disjoint. Override with BLOOM_API_RULE.
+        "api_pick": "argmax",                     # api_rule=overlap: "argmax" = most elicited-probable member of the overlap (deterministic, so rounds repeat); "sample" = draw from the overlap in proportion to elicited probability (keeps pool diversity). Override with BLOOM_API_PICK.
+        "api_top_k": 5,                           # api_rule=overlap: candidates requested per position per context. Fireworks caps this at 5.
         "b3": 0.0,                                # negative-steering weight in z = b1*target + b2*jail - b3*neg. 0 = off (the only knob; override BLOOM_JAIL_B3). Ablation: W2S logit-difference. When b3>0, the neg prompts load from the behaviour yaml (jailbroken_output_neg_system_prompt / _neg_user_prompt / _neg_prefill), or cfg jailbroken_output.neg_* if set.
     },
     "tokbias_output": {                           # static logit-bias baseline (z = target + lambda*bias over the whole vocab) — a separate elicitation method from jail. Numeric knobs here; the prompt content (prompt / neg_prompt / words) lives in the behaviour yaml (tokbias_output_prompt / _neg_prompt / _words). Every field overridable via BLOOM_TOKBIAS_*.
@@ -268,6 +271,9 @@ if __name__ == "__main__":
         # without this the judgment-stage auditor stays on GPU 0 and two pipelines on different GPUs
         # collide ("engine core init failed on GPU 0").
         ("BLOOM_EVAL_GPU",       ("evaluator_gpu_id",),                       int),
+        ("BLOOM_API_RULE",       ("jailbroken_output", "api_rule"),           str),   # api_tilt: corner | overlap
+        ("BLOOM_API_PICK",       ("jailbroken_output", "api_pick"),           str),   # api_rule=overlap: argmax | sample
+        ("BLOOM_API_TOPK",       ("jailbroken_output", "api_top_k"),          int),   # api_rule=overlap: candidates per position (Fireworks max 5)
         ("BLOOM_JUDGE_MODEL",    ("judgment", "model"),                       str),   # non-'local/' id => hosted API via litellm
         ("BLOOM_JUDGE_THINKING", ("judgment", "thinking"),                    _envbool),
         ("BLOOM_EVAL_MAXTOK",    ("rollout", "evaluator_max_tokens"),         int),   # raise eval cap for hosted-API eval WITH thinking (budget reserved inside max_tokens)
@@ -343,6 +349,7 @@ if __name__ == "__main__":
         "BLOOM_JAIL_BETA", "BLOOM_JAIL_FLOOR", "BLOOM_JAIL_MODEL",
         "BLOOM_JAIL_NEG_NORMAL", "BLOOM_JAIL_PREFILL", "BLOOM_JAIL_VAR_BATCH",
         "BLOOM_NO_THINK_WRAPPER", "BLOOM_RUNS_ROOT", "BLOOM_TARGET_API",
+        "BLOOM_TARGET_TOKENIZER",
         "BLOOM_TARGET_ATTN", "BLOOM_TARGET_BOS_TOKEN",
         "BLOOM_TARGET_CHAT_TEMPLATE", "BLOOM_TARGET_DEVICE_MAP", "BLOOM_TARGET_DTYPE",
         "BLOOM_TARGET_ENGINE", "BLOOM_TARGET_GPU", "BLOOM_TARGET_GPUS",

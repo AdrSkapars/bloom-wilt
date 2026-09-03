@@ -72,8 +72,27 @@ case "$ARM" in
     export BLOOM_JAIL_BETA=1             # b2 = 1
     export BLOOM_JAIL_FLOOR=0            # no naturalness floor (needs target logits; see header)
     ;;
+  overlap)
+    # Per-token decode combining both contexts: emit the overlap member of the two top-5
+    # candidate sets that the ELICITED context ranks highest; when the sets are disjoint,
+    # emit a plain sample from the target context. b1/b2 do not apply -- this is not a
+    # point on the (b1,b2) plane.
+    # BLOOM_API_PICK chooses WHICH overlap member is emitted:
+    #   elicited  most probable under the jail context (the original rule)
+    #   target    most probable under the target context
+    #   combined  highest sum of logprobs = highest product of probabilities, i.e. the
+    #             top-5-restricted form of the true tilt at b1=b2=1
+    #   random    uniform over the overlap
+    #   sample    drawn in proportion to elicited probability
+    PICK="${BLOOM_API_PICK:-elicited}"
+    export BLOOM_API_PICK=$PICK
+    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}_15s
+    export BLOOM_JAIL_MODEL=$TARGET
+    export BLOOM_API_RULE=overlap
+    export BLOOM_JAIL_FLOOR=0
+    ;;
   *)
-    echo "usage: run_api.sh [elicited|vanilla] [rounds]"; exit 2 ;;
+    echo "usage: run_api.sh [elicited|vanilla|overlap] [rounds]"; exit 2 ;;
 esac
 
 echo "=== arm=$ARM  rounds=$ROUNDS  scen=$SCEN  seed=$SEED"

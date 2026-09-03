@@ -71,6 +71,57 @@ _PROVIDERS = {
 _DEFAULT_BOS = "<｜begin▁of▁sentence｜>"
 
 
+class _TokenResolver:
+    """Maps a top-k candidate STRING back to its token id.
+
+    The provider returns alternatives as text only, but the running context is a list of
+    token ids, so a chosen candidate has to be resolved before it can be appended. The
+    vocabulary cannot be looked up directly: it stores byte-level keys (a leading space is
+    `\u0120`, not " "), so `vocab[" right"]` misses. Decoding every id instead gives the
+    same surface form the API reports, which matches exactly.
+
+    Verified against 8767 real (string, id) pairs from the collected runs: 8722 exact, the
+    rest the end-of-sequence token (handled by id), and all 4400 distinct top-5 candidate
+    strings resolve.
+    """
+
+    def __init__(self, path: str):
+        from tokenizers import Tokenizer
+        self._tok = Tokenizer.from_file(path)
+        self._by_text: Dict[str, int] = {}
+        for i in range(self._tok.get_vocab_size()):
+            s = self._tok.decode([i], skip_special_tokens=False)
+            if s not in self._by_text:      # 36 byte-fallback strings collide; keep the lowest id
+                self._by_text[s] = i
+        self.eos_id = self._tok.get_vocab().get("<｜end▁of▁sentence｜>", 1)
+
+    def id_of(self, text: str) -> Optional[int]:
+        return self._by_text.get(text)
+
+    def decode(self, ids: List[int]) -> str:
+        return self._tok.decode(list(ids), skip_special_tokens=True)
+
+
+_RESOLVER: Dict[str, _TokenResolver] = {}
+
+
+def _resolver() -> _TokenResolver:
+    """Lazily build the reverse map (~129k decodes, a few seconds) once per process."""
+    path = (os.environ.get("BLOOM_TARGET_TOKENIZER", "") or "").strip()
+    if not path:
+        path = str(Path.home() / ".cache" / "bloom" / "dsv4_tokenizer.json")
+    if not Path(path).exists():
+        raise RuntimeError(
+            f"api_tilt rule=overlap needs the target's tokenizer.json to turn top-k candidate "
+            f"strings back into token ids, and none is at {path}. Fetch it once:\n"
+            f"  curl -L -o {path} https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731"
+            f"/resolve/main/tokenizer.json\n"
+            f"or point BLOOM_TARGET_TOKENIZER at one.")
+    if path not in _RESOLVER:
+        _RESOLVER[path] = _TokenResolver(path)
+    return _RESOLVER[path]
+
+
 class ApiTiltTarget:
     """One hosted model, addressed through /completions for both generation and scoring."""
 
@@ -110,11 +161,16 @@ class ApiTiltTarget:
                                 bos_token=self._bos)
 
     # ── HTTP ────────────────────────────────────────────────────────────────────────
-    def _post(self, body: Dict) -> Dict:
+    def _post(self, body: Dict, affinity: Optional[str] = None) -> Dict:
         data = json.dumps(body).encode()
+        # Fireworks' prompt cache lives in ONE replica, so a sequence of incrementally
+        # growing prompts only reuses its prefix if every call lands on the same one.
+        # Without this header the driven decode below scatters across replicas and
+        # silently pays full prefill every step (verified: cached_tokens goes 899 -> 0).
+        hdr = dict(self._hdr, **({"x-session-affinity": affinity} if affinity else {}))
         last = ""
         for attempt in range(self.max_retries):
-            req = urllib.request.Request(self.base + "/completions", data=data, headers=self._hdr)
+            req = urllib.request.Request(self.base + "/completions", data=data, headers=hdr)
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     self.n_calls += 1
@@ -219,6 +275,35 @@ class ApiTiltTarget:
                 "lp": [float(v) for v in list(lp.get("token_logprobs") or [])[-n:]],
                 "top": top}
 
+    def next_topk(self, ids: List[int], top_k: int = 5, temperature: float = 1.0,
+                  affinity: Optional[str] = None) -> Dict:
+        """One decode step: the top-`top_k` candidates for the position after `ids`.
+
+        Asks for a single token so the response carries `top_logprobs[0]` — the
+        distribution at that position — plus the token the provider itself sampled from
+        the full (untruncated) distribution, which the empty-overlap fallback uses
+        directly. `top_p`/`top_k` are pinned wide open so that sample is a genuine draw
+        from the whole distribution, not a truncated one.
+
+        Returns {"top": [(token_string, logprob) x top_k], "sampled_id", "sampled_str",
+        "sampled_lp", "cached"}.
+        """
+        r = self._post({"model": self.model, "prompt": list(ids), "max_tokens": 1,
+                        "temperature": float(temperature), "top_p": 1.0, "top_k": 0,
+                        "logprobs": int(top_k), "echo": False}, affinity=affinity)
+        ch = r["choices"][0]
+        lp = ch.get("logprobs") or {}
+        u = r.get("usage") or {}
+        self.n_prompt_tokens += int(u.get("prompt_tokens") or 0)
+        self.n_gen_tokens += int(u.get("completion_tokens") or 0)
+        top = sorted(((lp.get("top_logprobs") or [{}])[0] or {}).items(), key=lambda kv: -kv[1])
+        sid = (lp.get("token_ids") or [None])[0]
+        return {"top": top,
+                "sampled_id": (int(sid) if sid is not None else None),
+                "sampled_str": (lp.get("tokens") or [""])[0],
+                "sampled_lp": float((lp.get("token_logprobs") or [0.0])[0] or 0.0),
+                "cached": int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)}
+
     def stats(self) -> str:
         return (f"{self.n_calls} calls, {self.n_prompt_tokens} prompt tok, "
                 f"{self.n_gen_tokens} generated tok")
@@ -242,6 +327,129 @@ def load_api_target(target_model_id: str) -> Dict:
             "corrupt_no_think": core.think_prefix(target_model_id)}
 
 
+def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
+                    target_msgs_batch: List[List[Dict]], max_tokens: int,
+                    temperature: float, no_think_target: bool) -> List[Dict]:
+    """[api_tilt rule=overlap] Token-by-token decode that combines the two contexts.
+
+    Both contexts are advanced in lockstep over the SAME emitted tokens, and at each
+    position:
+
+      * ask each context for its top-5 next-token candidates (2 calls, issued together);
+      * if the two top-5 sets overlap, emit the overlap member the ELICITED context ranks
+        highest -- the behaviour the jail context wants, restricted to something the target
+        also considers a live candidate;
+      * if the overlap is empty, emit the token the TARGET context sampled on its own. That
+        is an ordinary draw from the full target distribution, not a top-5 pick, and it
+        costs nothing extra because the target call already sampled one.
+
+    Reported plausibility stays what it is everywhere else in this pipeline: the unmodified
+    TARGET probability of the emitted token. It is always known -- from the target's top-5
+    when the token came from the overlap, and from the target call's own token logprob when
+    it came from the fallback.
+
+    Both calls per step are the SAME shape and path, so the two contexts are numerically
+    comparable to each other; they are on the generation path, not the echo path, which
+    differs by ~2 pp (see the module docstring's note).
+    """
+    client: ApiTiltTarget = handle["client"]
+    res = _resolver()
+    NO_THINK = handle.get("target_no_think", "")
+    NO_THINK_C = handle.get("corrupt_no_think", "")
+    sys_prompt = jail_runtime_cfg.get("system_prompt", "")
+    prefill = jail_runtime_cfg.get("prefill", "") or ""
+    top_k = int(jail_runtime_cfg.get("api_top_k", 5) or 5)
+    # "argmax" is the rule as specified: the overlap member with the highest elicited
+    # probability. It is deterministic, so every round reproduces the same transcript --
+    # "sample" draws from the overlap in proportion to the elicited probabilities instead,
+    # which keeps round-to-round diversity for pools and post-run selection.
+    pick_mode = str(jail_runtime_cfg.get("api_pick", "elicited") or "elicited")
+
+    def _one(job):
+        idx, tm = job
+        aff = f"tilt-{os.getpid()}-{idx}"
+        t_prefix = client.render(tm, add_generation_prompt=True) + (NO_THINK if no_think_target else "")
+        conv = [m for m in tm if m.get("role") != "system"]
+        j_msgs = ([{"role": "system", "content": sys_prompt}] + conv) if sys_prompt else conv
+        j_prefix = client.render(j_msgs, add_generation_prompt=True) + NO_THINK_C + prefill
+        # Prefix ids come from the API's own tokenizer, so the starting context is exact;
+        # the local tokenizer is only ever used to resolve ONE candidate string at a time.
+        t_ids = client.prefix_ids(t_prefix)
+        j_ids = client.prefix_ids(j_prefix)
+
+        gen, t_lps, j_lps, n_fallback = [], [], [], 0
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            for _ in range(int(max_tokens)):
+                ft = ex.submit(client.next_topk, t_ids, top_k, temperature, aff + "-t")
+                fj = ex.submit(client.next_topk, j_ids, top_k, temperature, aff + "-j")
+                tr, jr = ft.result(), fj.result()
+                tmap = dict(tr["top"])
+                overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
+                if overlap:
+                    # overlap entries are (token_string, ELICITED logprob); tmap holds the
+                    # TARGET logprob for the same strings.
+                    if pick_mode in ("elicited", "argmax"):
+                        pick = max(overlap, key=lambda x: x[1])[0]
+                    elif pick_mode == "target":
+                        pick = max(overlap, key=lambda x: tmap[x[0]])[0]
+                    elif pick_mode == "combined":
+                        # Summing logprobs multiplies the probabilities — the top-5-restricted
+                        # form of the true tilt at b1=b2=1, argmaxed rather than sampled.
+                        pick = max(overlap, key=lambda x: x[1] + tmap[x[0]])[0]
+                    elif pick_mode == "random":
+                        pick = random.choice(overlap)[0]
+                    elif pick_mode == "sample":
+                        w = [math.exp(lp) for _, lp in overlap]
+                        tot = sum(w) or 1.0
+                        r, acc = random.random() * tot, 0.0
+                        pick = overlap[-1][0]
+                        for (s, _), wi in zip(overlap, w):
+                            acc += wi
+                            if r <= acc:
+                                pick = s
+                                break
+                    else:
+                        raise RuntimeError(
+                            f"jailbroken_output.api_pick={pick_mode!r} unknown "
+                            f"(elicited | target | combined | random | sample)")
+                    tid = res.id_of(pick)
+                    if tid is None:                    # unresolvable surface form
+                        tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                        j_lp = dict(jr["top"]).get(tr["sampled_str"])
+                        n_fallback += 1
+                    else:
+                        t_lp = tmap[pick]
+                        j_lp = dict(jr["top"])[pick]
+                else:
+                    tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                    j_lp = dict(jr["top"]).get(tr["sampled_str"])
+                    n_fallback += 1
+                if tid is None or tid == res.eos_id:
+                    break
+                gen.append(tid)
+                t_lps.append(t_lp)
+                j_lps.append(j_lp if j_lp is not None else float("nan"))
+                t_ids = t_ids + [tid]
+                j_ids = j_ids + [tid]
+
+        return {"best_text": res.decode(gen).strip(), "best_ids": gen,
+                "best_token_probs": [math.exp(l) * 100 for l in t_lps],
+                "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
+                "n_fallback": n_fallback}
+
+    jobs = list(enumerate(target_msgs_batch))
+    if len(jobs) == 1:
+        out = [_one(jobs[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(jobs), 16)) as ex:
+            out = list(ex.map(_one, jobs))
+    nf = sum(o.pop("n_fallback") for o in out)
+    nt = sum(len(o["best_ids"]) for o in out)
+    print(f"  [api_tilt rule=overlap pick={pick_mode}] {nt} tokens, "
+          f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)", flush=True)
+    return out
+
+
 def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
                        target_msgs_batch: List[List[Dict]], max_tokens: int,
                        temperature: float, no_think_target: bool) -> List[Dict]:
@@ -254,6 +462,9 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
     distribution the tokens were actually drawn from (free, and the natural input to
     the later top-k tilt approximation).
     """
+    if str(jail_runtime_cfg.get("api_rule", "corner") or "corner") == "overlap":
+        return _driven_overlap(handle, jail_runtime_cfg, target_msgs_batch,
+                               max_tokens, temperature, no_think_target)
     client: ApiTiltTarget = handle["client"]
     target_only = bool(jail_runtime_cfg.get("target_only"))
     b2 = float(jail_runtime_cfg.get("b2", 2.0))
@@ -322,4 +533,4 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
         return list(ex.map(_one, target_msgs_batch))
 
 
-__all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api"]
+__all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api", "_driven_overlap"]

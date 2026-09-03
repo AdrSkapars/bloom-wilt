@@ -22,6 +22,10 @@ ARMS = [
     ("jail_b2",          "tilt b2=2",     "1", "2",   "1e-4", "local"),
     ("api_vanilla_15s",  "target only",   "1", "0",   "0",    "api"),
     ("api_elicited_15s", "elicited only", "0", "1",   "0",    "api"),
+    ("api_overlap_elicited_15s", "overlap: elicited", "-", "-", "0", "api"),
+    ("api_overlap_target_15s",   "overlap: target",   "-", "-", "0", "api"),
+    ("api_overlap_combined_15s", "overlap: combined", "-", "-", "0", "api"),
+    ("api_overlap_random_15s",   "overlap: random",   "-", "-", "0", "api"),
 ]
 
 
@@ -40,15 +44,15 @@ def load(arm):
     return rows
 
 
-print(f"{'arm':16s} {'engine':7s} {'b1':>3s} {'b2':>4s} {'floor':>5s} {'n':>3s} "
-      f"{'presence':>9s} {'tok mean':>9s} {'min-of-mins':>12s}")
+print(f"{"arm":18s} {'engine':7s} {'b1':>3s} {'b2':>4s} {'floor':>5s} {'n':>3s} "
+      f"{'presence':>9s} {'tok mean':>9s} {"min tok prob":>12s}")
 print("-" * 82)
 for folder, label, b1, b2, floor, engine in ARMS:
     rows = load(folder)
     if not rows:
         continue
-    print(f"{label:16s} {engine:7s} {b1:>3s} {b2:>4s} {floor:>5s} {len(rows):3d} "
+    print(f"{label:18s} {engine:7s} {b1:>3s} {b2:>4s} {floor:>5s} {len(rows):3d} "
           f"{st.mean(r[0] for r in rows):9.1f} {st.mean(r[1] for r in rows):8.2f}% "
-          f"{min(r[2] for r in rows):11.4f}%")
+          f"{min(r[2] for r in rows)/100:11.2e}")
 print("\npresence = mean behaviour presence, 0-100 (judge score x10); round 1 only.")
-print("min-of-mins = lowest single-token target probability seen anywhere in the arm.")
+print("min tok prob = lowest single-token TARGET probability anywhere in the arm (not %).")

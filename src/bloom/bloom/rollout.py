@@ -1066,6 +1066,12 @@ def run_rollout_batched_local(
             "neg_normal":        bool(jail_cfg.get("neg_normal", False)),  # DELTA/proxy-tuning: neg = jail model under NORMAL (no-jail) prompt (BLOOM_JAIL_NEG_NORMAL)
             "top_k_logprobs": (int(jail_cfg["top_k_logprobs"]) if jail_cfg.get("top_k_logprobs") is not None else None),  # vllm_topk only; None on the default hf_full path
             "tokbias":      _tb,  # static logit-bias baseline: cfg.tokbias_output knobs + yaml prompt content; BLOOM_TOKBIAS_* override
+            # api_tilt only (inert on every local engine): which combination rule the hosted
+            # decode uses. "corner" = the two mixing-free (b1,b2) points; "overlap" = the
+            # token-by-token rule that intersects the two top-k candidate sets.
+            "api_rule":  str(jail_cfg.get("api_rule", "corner") or "corner"),
+            "api_pick":  str(jail_cfg.get("api_pick", "argmax") or "argmax"),
+            "api_top_k": int(jail_cfg.get("api_top_k", 5) or 5),
         }
         if not need_jail_model:
             # Self-jail input-search TRS only (jail_in_loss): no separate proposal model.
