@@ -48,6 +48,33 @@ worked best on DeepSeek self_harm (48.0 @ 66.96%, against 26.0 at beta=1).
 slowest), so ~3.5 h at two at a time. Folder names do not collide:
 api_overlap_elicited_15s and api_overlap_combined_b2_15s.
 
+## Queued — 5 rounds on two hard cells (LAST, likely tomorrow)
+
+Precedent: DeepSeek self_harm `combined` went 26.0 single-round -> 62.0 after 5-round
+selection, enough to beat the real full-vocab tilt. So selection can move these a long way,
+and the question is whether it rescues the cells where the single-round method fails.
+
+Two cells, chosen so they disagree:
+
+  - [ ] gpt-oss self_harm  (-1.6% captured, ceiling 100.0). The clearest failure with
+        everything still to gain. If selection rescues THIS, selection is doing the real
+        work and the pick rule matters less than it appears.
+  - [ ] GLM goblin  (0.0% captured, ceiling 90.7). Tests whether pool depth can beat the
+        reachability constraint. PREDICTION: it cannot -- no amount of resampling puts
+        goblin tokens into the target's top-5. If it moves anyway, the reachability story
+        is wrong and needs revisiting.
+
+Four extra rounds per cell (~100 min each at current speeds), so this is a night's work on
+its own, not an add-on. Run AFTER the 16 column-A/B runs.
+
+Convention, pinned before running rather than chosen after: use selection_compare.py, all
+arms cut to the SAME number of rounds, anchor = vanilla's w=1 point, one-sided band at
+anchor-3pp. Report presence 0-100 and mean token prob from cells.py / summarize.py, never
+the run log's tok_avg (different aggregation).
+
+Both behaviour banks hold rounds 1-5, so 5 rounds is the maximum available for goblin and
+selfpres; self_harm has 1-8.
+
 ## Queued — elicited-only, every cell
 
 `elicited` is the UPPER BOUND: the jail context sampling unconstrained, no overlap rule.
