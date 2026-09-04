@@ -96,7 +96,7 @@ class _TokenResolver:
         # <|endoftext|>), so take it from the vocab rather than assuming one.
         _v = self._tok.get_vocab()
         self.eos_id = next((_v[k] for k in ("<｜end▁of▁sentence｜>",
-                                            "<|endoftext|>", "<|im_end|>", "</s>")
+                                            "<|endoftext|>", "<|return|>", "<|im_end|>", "</s>")
                             if k in _v), 1)
 
     def id_of(self, text: str) -> Optional[int]:

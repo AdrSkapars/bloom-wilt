@@ -113,6 +113,11 @@ _USES_THINK_BLOCK = {
     # GLM-5.3's template ends `<|assistant|><think>` on add_generation_prompt, i.e. it
     # AUTO-OPENS the think block -- verified by reading chat_template.jinja, not assumed.
     "accounts/fireworks/models/glm-5p3-flash": True,
+    # gpt-oss uses OpenAI's harmony format, not a <think> block: its generation prompt is a
+    # bare `<|start|>assistant`, after which the model picks its own channel and emits
+    # `<|channel|>analysis` reasoning first. True here means "needs a wrapper appended to
+    # skip reasoning", and the override below supplies harmony's equivalent.
+    "accounts/fireworks/models/gpt-oss-120b": True,
     "deepseek-ai/deepseek-v4-flash-0731-api": False,   # together.ai names it this way
     # abliterated corruptor variants (same arch/vocab as their originals)
     "huihui-ai/huihui-qwen3.5-4b-abliterated": True,
@@ -126,6 +131,10 @@ _THINK_PREFILL = "<think>\n\n</think>\n"
 # nest a second opening tag; it needs only the CLOSER. Absent = use _THINK_PREFILL.
 _THINK_PREFILL_OVERRIDE = {
     "accounts/fireworks/models/glm-5p3-flash": "</think>",
+    # Force harmony's FINAL channel, so the reply is the answer rather than a reasoning
+    # trace. Without it the decode would return <|channel|>analysis content and the judge
+    # would score the model's scratchpad.
+    "accounts/fireworks/models/gpt-oss-120b": "<|channel|>final<|message|>",
 }
 
 

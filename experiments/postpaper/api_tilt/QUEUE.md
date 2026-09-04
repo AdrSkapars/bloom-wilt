@@ -20,6 +20,22 @@ Two settings per cell:
 - [ ] goblin: vanilla, then `combined b=1`
 - [ ] selfpres: vanilla, then `combined b=1`
 
+## Queued — elicited-only, every cell
+
+`elicited` is the UPPER BOUND: the jail context sampling unconstrained, no overlap rule.
+With vanilla (lower bound) and overlap b=1 (the method) it gives the full range per cell
+rather than two points. Cheap -- ~5 min each, plain generate path, no driven decode.
+
+DeepSeek already has self_harm elicited (100.0 @ 50.86%); the other two are missing, so
+its rows are not comparable to the new models' until they exist.
+
+- [ ] DeepSeek: goblin, selfpres
+- [ ] GLM: self_harm, goblin, selfpres
+- [ ] gpt-oss (or qwen3p7-plus): self_harm, goblin, selfpres
+
+Eight runs, ~40 min total. Run AFTER the current overlap arms, and prefer pairing a cheap
+elicited arm with a slow overlap arm rather than two slow ones.
+
 ## Queued — GLM-5.3-flash  (`accounts/fireworks/models/glm-5p3-flash`)
 
 Setup first: chat template, BOS token, `_USES_THINK_BLOCK` entry, `tokenizer.json`.
