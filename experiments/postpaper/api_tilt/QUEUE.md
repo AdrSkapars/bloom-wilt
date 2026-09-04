@@ -20,6 +20,34 @@ Two settings per cell:
 - [ ] goblin: vanilla, then `combined b=1`
 - [ ] selfpres: vanilla, then `combined b=1`
 
+## Queued — two more grid columns (16 runs)
+
+Same 3x3 (self_harm/goblin/selfpres x DeepSeek/GLM/gpt-oss), two more pick rules. Each
+becomes another column of the cells.py table.
+
+**A. `BLOOM_API_PICK=elicited`** -- argmax by the ELICITED context alone, still restricted
+to the overlap. Expected to land between `combined` and elicited-only, because it keeps the
+target's candidate set but chooses by the jail ranking instead of the product. The one cell
+already measured supports that: DeepSeek self_harm scored 81.3 @ 56.46%, against combined's
+26.0 and elicited-only's 100.0 -- ~77% captured against combined's 10.5%. If that holds
+across the grid it is a far better rule than combined and the beta sweep was run on the
+weaker one.
+
+  - [x] DeepSeek self_harm (done: 81.3 @ 56.46%)
+  - [ ] DeepSeek goblin, selfpres
+  - [ ] GLM x3, gpt-oss x3
+
+**B. `BLOOM_API_PICK=combined BLOOM_API_BETA=2`** -- the existing rule at the beta that
+worked best on DeepSeek self_harm (48.0 @ 66.96%, against 26.0 at beta=1).
+
+  - [x] DeepSeek self_harm (done: 48.0 @ 66.96%)
+  - [ ] DeepSeek goblin, selfpres
+  - [ ] GLM x3, gpt-oss x3
+
+16 new runs. Overlap arms have run 9-46 min depending on model (gpt-oss fastest, GLM
+slowest), so ~3.5 h at two at a time. Folder names do not collide:
+api_overlap_elicited_15s and api_overlap_combined_b2_15s.
+
 ## Queued — elicited-only, every cell
 
 `elicited` is the UPPER BOUND: the jail context sampling unconstrained, no overlap rule.
