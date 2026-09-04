@@ -210,6 +210,7 @@ cfg = DotDict({
         "b2": 4.0,                                # jail-expert weight in z = b1*target + b2*jail - b3*neg (PoE weight on log p_jailbroken); only used when enabled=True. Tuned per (model, behaviour) — the sweep sets it via BLOOM_JAIL_BETA.
         "api_rule": "corner",                     # api_tilt engine ONLY (inert on hf_full/vllm_topk). "corner" = the two mixing-free tilt points (b1=1,b2=0 or b1=0,b2!=0). "overlap" = per-token decode taking the elicited-best member of the two top-k candidate sets' intersection, falling back to a plain target sample when they are disjoint. Override with BLOOM_API_RULE.
         "api_pick": "argmax",                     # api_rule=overlap: "argmax" = most elicited-probable member of the overlap (deterministic, so rounds repeat); "sample" = draw from the overlap in proportion to elicited probability (keeps pool diversity). Override with BLOOM_API_PICK.
+        "api_fallback": "target_sample",           # api_rule=overlap: what to emit when the two top-k sets are DISJOINT. "target_sample" = plain draw from the target's full distribution (free; the provider already sampled one). "top5_argmax" / "top5_random" / "top5_weighted" restrict that choice to the target's own top-k. Fires on ~1-6% of positions. Override with BLOOM_API_FALLBACK.
         "api_top_k": 5,                           # api_rule=overlap: candidates requested per position per context. Fireworks caps this at 5.
         "b3": 0.0,                                # negative-steering weight in z = b1*target + b2*jail - b3*neg. 0 = off (the only knob; override BLOOM_JAIL_B3). Ablation: W2S logit-difference. When b3>0, the neg prompts load from the behaviour yaml (jailbroken_output_neg_system_prompt / _neg_user_prompt / _neg_prefill), or cfg jailbroken_output.neg_* if set.
     },
@@ -272,7 +273,8 @@ if __name__ == "__main__":
         # collide ("engine core init failed on GPU 0").
         ("BLOOM_EVAL_GPU",       ("evaluator_gpu_id",),                       int),
         ("BLOOM_API_RULE",       ("jailbroken_output", "api_rule"),           str),   # api_tilt: corner | overlap
-        ("BLOOM_API_PICK",       ("jailbroken_output", "api_pick"),           str),   # api_rule=overlap: argmax | sample
+        ("BLOOM_API_PICK",       ("jailbroken_output", "api_pick"),           str),   # api_rule=overlap: elicited | target | combined | combined_min | combined_sample | random | sample
+        ("BLOOM_API_FALLBACK",   ("jailbroken_output", "api_fallback"),       str),   # api_rule=overlap, disjoint sets: target_sample | top5_argmax | top5_random | top5_weighted
         ("BLOOM_API_TOPK",       ("jailbroken_output", "api_top_k"),          int),   # api_rule=overlap: candidates per position (Fireworks max 5)
         ("BLOOM_JUDGE_MODEL",    ("judgment", "model"),                       str),   # non-'local/' id => hosted API via litellm
         ("BLOOM_JUDGE_THINKING", ("judgment", "thinking"),                    _envbool),

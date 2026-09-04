@@ -102,6 +102,24 @@ class _TokenResolver:
         return self._tok.decode(list(ids), skip_special_tokens=True)
 
 
+def _wsample(items, key):
+    """Sample one item with weight proportional to exp(key(item)).
+
+    Shifted by the max before exponentiating: `combined` scores are sums of two logprobs,
+    so exp() of them underflows to zero well inside the range we actually see.
+    """
+    ls = [key(x) for x in items]
+    m = max(ls)
+    w = [math.exp(l - m) for l in ls]
+    tot = sum(w) or 1.0
+    r, acc = random.random() * tot, 0.0
+    for x, wi in zip(items, w):
+        acc += wi
+        if r <= acc:
+            return x
+    return items[-1]
+
+
 _RESOLVER: Dict[str, _TokenResolver] = {}
 
 
@@ -364,6 +382,11 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # "sample" draws from the overlap in proportion to the elicited probabilities instead,
     # which keeps round-to-round diversity for pools and post-run selection.
     pick_mode = str(jail_runtime_cfg.get("api_pick", "elicited") or "elicited")
+    # What to emit when the two top-k sets are DISJOINT. "target_sample" is a plain draw
+    # from the target's full distribution (the provider already sampled one, so it costs
+    # nothing); the top5_* variants restrict that choice to the target's own top-k instead.
+    # Only fires on ~1-6% of positions, so it is a small lever by construction.
+    fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
 
     def _one(job):
         idx, tm = job
@@ -396,6 +419,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         # Summing logprobs multiplies the probabilities — the top-5-restricted
                         # form of the true tilt at b1=b2=1, argmaxed rather than sampled.
                         pick = max(overlap, key=lambda x: x[1] + tmap[x[0]])[0]
+                    elif pick_mode == "combined_min":
+                        # Anti-selection control: the LEAST probable overlap member.
+                        pick = min(overlap, key=lambda x: x[1] + tmap[x[0]])[0]
+                    elif pick_mode == "combined_sample":
+                        # Draw from the overlap in proportion to the PRODUCT of the two
+                        # probabilities, rather than argmaxing it. Unlike "random" this
+                        # respects the ranking, and unlike "combined" it is stochastic, so
+                        # rounds differ and a pool exists for post-run selection.
+                        pick = _wsample(overlap, lambda x: x[1] + tmap[x[0]])[0]
                     elif pick_mode == "random":
                         pick = random.choice(overlap)[0]
                     elif pick_mode == "sample":
@@ -421,9 +453,26 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         t_lp = tmap[pick]
                         j_lp = dict(jr["top"])[pick]
                 else:
-                    tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
-                    j_lp = dict(jr["top"]).get(tr["sampled_str"])
                     n_fallback += 1
+                    jmap = dict(jr["top"])
+                    cand = None
+                    if fb_mode == "top5_argmax" and tr["top"]:
+                        cand = tr["top"][0][0]
+                    elif fb_mode == "top5_random" and tr["top"]:
+                        cand = random.choice(tr["top"])[0]
+                    elif fb_mode == "top5_weighted" and tr["top"]:
+                        cand = _wsample(tr["top"], lambda x: x[1])[0]
+                    elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
+                                         "top5_weighted"):
+                        raise RuntimeError(
+                            f"jailbroken_output.api_fallback={fb_mode!r} unknown (target_sample "
+                            f"| top5_argmax | top5_random | top5_weighted)")
+                    cid = res.id_of(cand) if cand is not None else None
+                    if cid is None:      # target_sample, or an unresolvable surface form
+                        tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                        j_lp = jmap.get(tr["sampled_str"])
+                    else:
+                        tid, t_lp, j_lp = cid, tmap[cand], jmap.get(cand)
                 if tid is None or tid == res.eos_id:
                     break
                 gen.append(tid)
@@ -445,7 +494,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
             out = list(ex.map(_one, jobs))
     nf = sum(o.pop("n_fallback") for o in out)
     nt = sum(len(o["best_ids"]) for o in out)
-    print(f"  [api_tilt rule=overlap pick={pick_mode}] {nt} tokens, "
+    print(f"  [api_tilt rule=overlap pick={pick_mode} fb={fb_mode}] {nt} tokens, "
           f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)", flush=True)
     return out
 

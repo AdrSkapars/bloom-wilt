@@ -1070,7 +1070,8 @@ def run_rollout_batched_local(
             # decode uses. "corner" = the two mixing-free (b1,b2) points; "overlap" = the
             # token-by-token rule that intersects the two top-k candidate sets.
             "api_rule":  str(jail_cfg.get("api_rule", "corner") or "corner"),
-            "api_pick":  str(jail_cfg.get("api_pick", "argmax") or "argmax"),
+            "api_pick":  str(jail_cfg.get("api_pick", "elicited") or "elicited"),
+            "api_fallback": str(jail_cfg.get("api_fallback", "target_sample") or "target_sample"),
             "api_top_k": int(jail_cfg.get("api_top_k", 5) or 5),
         }
         if not need_jail_model:

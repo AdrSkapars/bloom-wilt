@@ -26,6 +26,11 @@ ARMS = [
     ("api_overlap_target_15s",   "overlap: target",   "-", "-", "0", "api"),
     ("api_overlap_combined_15s", "overlap: combined", "-", "-", "0", "api"),
     ("api_overlap_random_15s",   "overlap: random",   "-", "-", "0", "api"),
+    ("api_overlap_combined_min_15s",    "combined: bottom-1",  "-", "-", "0", "api"),
+    ("api_overlap_combined_sample_15s", "combined: weighted",  "-", "-", "0", "api"),
+    ("api_overlap_combined_fbweighted_15s", "combined, fb=wtd",   "-", "-", "0", "api"),
+    ("api_overlap_combined_fbrandom_15s",   "combined, fb=rand",  "-", "-", "0", "api"),
+    ("api_overlap_combined_fbargmax_15s",   "combined, fb=argmx", "-", "-", "0", "api"),
 ]
 
 

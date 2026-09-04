@@ -85,8 +85,12 @@ case "$ARM" in
     #   random    uniform over the overlap
     #   sample    drawn in proportion to elicited probability
     PICK="${BLOOM_API_PICK:-elicited}"
+    FB="${BLOOM_API_FALLBACK:-target_sample}"
     export BLOOM_API_PICK=$PICK
-    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}_15s
+    export BLOOM_API_FALLBACK=$FB
+    # Default fallback keeps the original folder name so earlier runs stay addressable.
+    if [ "$FB" = "target_sample" ]; then SUF=""; else SUF="_fb${FB#top5_}"; fi
+    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}${SUF}_15s
     export BLOOM_JAIL_MODEL=$TARGET
     export BLOOM_API_RULE=overlap
     export BLOOM_JAIL_FLOOR=0
