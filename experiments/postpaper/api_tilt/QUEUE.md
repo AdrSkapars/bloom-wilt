@@ -47,6 +47,41 @@ round-trip). `_USES_THINK_BLOCK` fails SILENTLY: register a model as not auto-op
 dominated by `</think>`. The run completes, the numbers look plausible, and they mean
 nothing. The canary is the cheapest way to catch that.
 
+## When a run fails: FIX IT, do not move on
+
+A failed arm is a hole in the results, and the next arm will usually fail the same way.
+So on failure: read the log, find the cause, fix it, RE-RUN THAT ARM. Only then advance.
+
+  - `RuntimeError: api_tilt request failed after N attempts` -> the retry budget or the
+    timeout is wrong for current conditions, or the endpoint is degraded. Check the retry
+    reasons in the log before changing anything.
+  - a traceback out of `_driven_overlap` -> a bug, not weather. Fix the code.
+  - `Round 1 FAILED` with no api_tilt errors -> look upstream at the auditor or judge.
+  - repeated identical failures on the SAME arm, external cause (endpoint down): stop the
+    queue and say so. Do not burn the remaining arms against a dead endpoint -- that is
+    how a whole night gets wasted producing nothing.
+
+Never let a failure quietly become "0 of N arms produced results". Report it when it
+happens, with the cause.
+
+## Stuck or too slow
+
+Known-good timings at normal endpoint latency:
+
+  - vanilla / elicited-only arm: ~3-5 min total
+  - overlap arm: ~20-45 min total, roughly 3 turns, one `rule=overlap` line per turn
+
+Treat as stuck and investigate:
+
+  - log file untouched for >15 min while a python process is alive (this exact signature
+    cost an hour: a hung socket held in CLOSE_WAIT while the endpoint answered fine)
+  - an overlap arm past ~75 min, or a vanilla arm past ~15 min
+  - retries climbing fast with no new `rule=overlap` line appearing
+
+Diagnose before killing: check whether the endpoint itself is healthy with a single
+direct call, and read `Fireworks-Server-Time-To-First-Token` on a response -- if TTFT is
+tens of seconds, it is a cold replica and ours to route around, not a bug in the code.
+
 ## Watch during runs, not just after
 
 - `[api_tilt] retry` lines — a few are normal, hundreds mean the endpoint is degraded
