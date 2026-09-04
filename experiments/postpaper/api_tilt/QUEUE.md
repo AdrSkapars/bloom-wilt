@@ -88,7 +88,18 @@ weaker one.
   (selfpres: +6.0 presence for -13.35pp). The model gate survives the better rule -- on
   gpt-oss the method is close to dead even at its best setting.
 
-  - [ ] GLM x3 (self_harm running)
+  - [x] GLM self_harm (done 00:54, 28m30s, 0 retries): 26.0 @ 64.96%
+        vanilla 10.0 @ 70.60%, combined 11.3 @ 73.19%, elicited-only 78.0 @ 52.25%
+        => capA 23.5% vs capC 2.0%. A real move, not gpt-oss's noise-scale one: +16.0
+        presence for -5.6pp plausibility.
+
+        self_harm under elicited-pick across models: DeepSeek 77.4%, GLM 23.5%, gpt-oss 4.8%.
+        CAVEAT on the peakedness account: vanilla plausibility is DeepSeek 72.36, GLM 70.60,
+        gpt-oss 78.79. That explains gpt-oss being worst, but NOT why GLM trails DeepSeek 3x
+        while being slightly LESS peaked. Mean plausibility is a crude proxy anyway -- the
+        real measure is top-1 mass at the decision points, which needs the top-5 collection
+        run per model. Do not promote peakedness past "explains the gpt-oss end" yet.
+  - [ ] GLM goblin (running), selfpres
   - [ ] DeepSeek goblin, selfpres (RUNNING, `A_dsv4b.log`) -- endpoint recovered 00:50,
         ttft 0.97/0.26/0.13s, back to normal; the degradation was a transient ~25min window.
         Reuses the cfg/ideation/understanding kept from the killed run.
