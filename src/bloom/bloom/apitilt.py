@@ -69,6 +69,21 @@ _PROVIDERS = {
 # tokenizer.bos_token); with no tokenizer here it comes from BLOOM_TARGET_BOS_TOKEN.
 _DEFAULT_BOS = "<｜begin▁of▁sentence｜>"
 
+# Control markers that must never survive into a stored reply. gpt-oss keeps generating
+# past its answer into a new harmony block (`<|end|><|start|>assistant<|channel|>...`);
+# the decode stops at EOS (<|return|>) but not at <|end|>, so those tags reach the
+# transcript and the template then REFUSES to re-render that turn:
+#   "You have passed a message containing <|channel|> tags in the content field."
+# Truncating at the first marker keeps the answer and drops the runaway continuation.
+_STOP_MARKERS = ("<|end|>", "<|start|>", "<|channel|>", "<|message|>", "<|return|>",
+                 "<|call|>", "<|constrain|>")
+
+
+def _clip(text: str) -> str:
+    """Cut a decoded reply at the first control marker, if any."""
+    cut = min((text.find(m) for m in _STOP_MARKERS if m in text), default=-1)
+    return (text[:cut] if cut >= 0 else text).strip()
+
 
 class _TokenResolver:
     """Maps a top-k candidate STRING back to its token id.
@@ -574,7 +589,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 t_ids = t_ids + [tid]
                 j_ids = j_ids + [tid]
 
-        return {"best_text": res.decode(gen).strip(), "best_ids": gen,
+        return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "truncated": truncated}
@@ -660,7 +675,7 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
             # target probs. No second pass.
             g = client.generate(_target_prefix(tm), max_tokens, temperature)
             probs = [math.exp(l) * 100 for l in g["logprobs"]]
-            return {"best_text": (g["text"] or "").strip(), "best_ids": g["ids"],
+            return {"best_text": _clip(g["text"] or ""), "best_ids": g["ids"],
                     "best_token_probs": probs}
         # Elicited only: sample from the jail context, then score those exact tokens under
         # the TARGET context to get the plausibility metric.
@@ -669,7 +684,7 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
         if not ids:
             return {"best_text": "", "best_ids": [], "best_token_probs": []}
         t_lps = client.score_ids(_target_prefix(tm), ids)
-        return {"best_text": text.strip(), "best_ids": ids,
+        return {"best_text": _clip(text), "best_ids": ids,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [math.exp(l) * 100 for l in g["logprobs"]]}
 
