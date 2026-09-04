@@ -1072,6 +1072,7 @@ def run_rollout_batched_local(
             "api_rule":  str(jail_cfg.get("api_rule", "corner") or "corner"),
             "api_pick":  str(jail_cfg.get("api_pick", "elicited") or "elicited"),
             "api_fallback": str(jail_cfg.get("api_fallback", "target_sample") or "target_sample"),
+            "api_beta":  float(jail_cfg.get("api_beta", 1.0) or 1.0),
             "api_top_k": int(jail_cfg.get("api_top_k", 5) or 5),
         }
         if not need_jail_model:

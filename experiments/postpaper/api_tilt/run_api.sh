@@ -90,7 +90,11 @@ case "$ARM" in
     export BLOOM_API_FALLBACK=$FB
     # Default fallback keeps the original folder name so earlier runs stay addressable.
     if [ "$FB" = "target_sample" ]; then SUF=""; else SUF="_fb${FB#top5_}"; fi
-    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}${SUF}_15s
+    BETA="${BLOOM_API_BETA:-1}"
+    export BLOOM_API_BETA=$BETA
+    # beta=1 keeps the original folder name so the existing runs stay addressable.
+    if [ "$BETA" = "1" ]; then BSUF=""; else BSUF="_b${BETA}"; fi
+    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}${BSUF}${SUF}_15s
     export BLOOM_JAIL_MODEL=$TARGET
     export BLOOM_API_RULE=overlap
     export BLOOM_JAIL_FLOOR=0

@@ -145,7 +145,7 @@ class ApiTiltTarget:
 
     def __init__(self, model: str, provider: str = "fireworks",
                  template_path: str = "", bos_token: str = _DEFAULT_BOS,
-                 timeout: float = 300.0, max_retries: int = 5):
+                 timeout: float = 45.0, max_retries: int = 5):
         if provider not in _PROVIDERS:
             raise RuntimeError(
                 f"BLOOM_TARGET_API={provider!r} unknown; known providers: {sorted(_PROVIDERS)}")
@@ -155,7 +155,9 @@ class ApiTiltTarget:
             raise RuntimeError(
                 f"{p['key_env']} is not set — the api_tilt engine needs it to reach {provider}.")
         self.model, self.provider, self.base = model, provider, p["base"]
-        self.timeout, self.max_retries = timeout, max_retries
+        self.timeout = float(os.environ.get("BLOOM_API_TIMEOUT", "") or timeout)
+        self.max_retries = max_retries
+        self.n_retries = 0
         # Cloudflare in front of some providers rejects the default urllib User-Agent.
         self._hdr = {"User-Agent": "curl/8.4.0", "Content-Type": "application/json",
                      "Accept": "application/json", "Authorization": f"Bearer {key}"}
@@ -200,6 +202,10 @@ class ApiTiltTarget:
                     raise RuntimeError(f"api_tilt request rejected — {last}")
             except Exception as e:                      # timeout / connection reset
                 last = f"{type(e).__name__}: {e}"
+            # Retries were previously silent, which made a hung socket look exactly like
+            # ordinary slowness in the run log. Say so.
+            self.n_retries += 1
+            print(f"  [api_tilt] retry {attempt + 1}/{self.max_retries} after {last}", flush=True)
             time.sleep(min(30.0, 2.0 ** attempt) * (0.5 + random.random()))
         raise RuntimeError(f"api_tilt request failed after {self.max_retries} attempts — {last}")
 
@@ -323,8 +329,8 @@ class ApiTiltTarget:
                 "cached": int((u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)}
 
     def stats(self) -> str:
-        return (f"{self.n_calls} calls, {self.n_prompt_tokens} prompt tok, "
-                f"{self.n_gen_tokens} generated tok")
+        return (f"{self.n_calls} calls, {self.n_retries} retries, "
+                f"{self.n_prompt_tokens} prompt tok, {self.n_gen_tokens} generated tok")
 
 
 def load_api_target(target_model_id: str) -> Dict:
@@ -387,6 +393,11 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # nothing); the top5_* variants restrict that choice to the target's own top-k instead.
     # Only fires on ~1-6% of positions, so it is a small lever by construction.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
+    # Weight on the ELICITED term of the combined score: z = l_target + beta * l_elicited,
+    # restricted to the overlap. This is the tilt's own b2 knob, reintroduced on the top-k
+    # candidate set; beta=1 is the plain product of the two probabilities. Under
+    # combined_sample it also sharpens the draw, exactly as b2 does on the local path.
+    beta = float(jail_runtime_cfg.get("api_beta", 1.0) or 1.0)
 
     def _one(job):
         idx, tm = job
@@ -408,6 +419,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 tr, jr = ft.result(), fj.result()
                 tmap = dict(tr["top"])
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
+                # z = l_target + beta * l_elicited, over this step's candidates only
+                _comb = lambda x, _m=tmap: _m[x[0]] + beta * x[1]
                 if overlap:
                     # overlap entries are (token_string, ELICITED logprob); tmap holds the
                     # TARGET logprob for the same strings.
@@ -417,17 +430,17 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         pick = max(overlap, key=lambda x: tmap[x[0]])[0]
                     elif pick_mode == "combined":
                         # Summing logprobs multiplies the probabilities — the top-5-restricted
-                        # form of the true tilt at b1=b2=1, argmaxed rather than sampled.
-                        pick = max(overlap, key=lambda x: x[1] + tmap[x[0]])[0]
+                        # form of the true tilt at b1=1, b2=beta, argmaxed rather than sampled.
+                        pick = max(overlap, key=_comb)[0]
                     elif pick_mode == "combined_min":
                         # Anti-selection control: the LEAST probable overlap member.
-                        pick = min(overlap, key=lambda x: x[1] + tmap[x[0]])[0]
+                        pick = min(overlap, key=_comb)[0]
                     elif pick_mode == "combined_sample":
                         # Draw from the overlap in proportion to the PRODUCT of the two
                         # probabilities, rather than argmaxing it. Unlike "random" this
                         # respects the ranking, and unlike "combined" it is stochastic, so
                         # rounds differ and a pool exists for post-run selection.
-                        pick = _wsample(overlap, lambda x: x[1] + tmap[x[0]])[0]
+                        pick = _wsample(overlap, _comb)[0]
                     elif pick_mode == "random":
                         pick = random.choice(overlap)[0]
                     elif pick_mode == "sample":
@@ -494,7 +507,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
             out = list(ex.map(_one, jobs))
     nf = sum(o.pop("n_fallback") for o in out)
     nt = sum(len(o["best_ids"]) for o in out)
-    print(f"  [api_tilt rule=overlap pick={pick_mode} fb={fb_mode}] {nt} tokens, "
+    print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
           f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)", flush=True)
     return out
 
