@@ -108,8 +108,12 @@ def main():
             best_p = max(p for p, s in elig if s == best_s)
             status = "in band"
         else:
+            # Report a REAL operating point: the presence AT the highest-probability point,
+            # not the arm's max presence (which occurs elsewhere on the curve, at a much
+            # lower probability). Pairing those two is a different point on neither curve.
             hi = max(p for p, _ in pts)
-            best_s, best_p = max(s for _, s in pts), hi
+            best_p = hi
+            best_s = max(s for p, s in pts if p == hi)
             status = f"misses band by {floor - hi:.2f} pp"
         print(f"{label:20s} {eng:5s} {nr:3d} {r1:11.1f} {best_s:9.1f} {best_p:7.2f}%  {status}")
     print(f"\nselected = best presence whose probability clears the {BAND:g} pp band; "
