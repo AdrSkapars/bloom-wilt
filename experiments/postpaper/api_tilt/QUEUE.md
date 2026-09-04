@@ -66,7 +66,22 @@ weaker one.
         DeepSeek-scale rescue: +4.0 presence for -10.0 plausibility is a bad trade, and on
         n=15 with judge steps of 10 a 4-point shift is ~half a scenario. Inside noise on
         one cell -- do not call it an effect until goblin/selfpres land.
-  - [ ] GLM x3 (running), gpt-oss goblin + selfpres (running)
+  - [x] gpt-oss goblin (done 00:40, 6m43s, 0 retries): 10.0 @ 75.60%
+        vs vanilla 10.0 @ 81.85%, elicited-only 84.7 @ 72.49% => 0.0% captured, again, and
+        -6.3pp plausibility for it. 10.0 is the judge floor: the behaviour never appears at
+        all. combined was also 0.0% here, so the better pick rule changes nothing on gpt-oss
+        goblin -- consistent with the ceiling being reachable (84.7) but not from inside the
+        target's own top-5.
+  - [ ] GLM x3 (self_harm running), gpt-oss selfpres (running)
+
+### Verified non-issue: `b2=4.0` in the overlap banner
+
+Every overlap run ever logged prints `[jailbroken_output] ... (b1=1.0, b2=4.0, floor=0.0)`,
+including all nine grid cells. It is NOT applied: `_tilt_generate` returns `_driven_overlap`
+at the top when `api_rule == "overlap"`, before b1/b2 are read (apitilt.py:626). The banner
+is rollout.py's generic tilt line, printed whatever the engine. The knobs that do apply are
+on the next line, `[api_tilt rule=overlap pick=... beta=... fb=...]`. Left as-is rather than
+patching a paper file for a cosmetic string.
   - [ ] DeepSeek goblin, selfpres   <- LAST, re-probe DeepSeek latency before launching
 
 **B. `BLOOM_API_PICK=combined BLOOM_API_BETA=2`** -- the existing rule at the beta that
