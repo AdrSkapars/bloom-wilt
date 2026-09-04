@@ -53,6 +53,10 @@ export BLOOM_MAX_CONCURRENT="${BLOOM_MAX_CONCURRENT:-15}"
 # Issue the per-scenario evaluator turns concurrently rather than one after another.
 # Off (1) by default in the pipeline so the paper's path is untouched; on here.
 export BLOOM_ROLLOUT_CONCURRENCY="${BLOOM_ROLLOUT_CONCURRENCY:-15}"
+# Priority serving: standard is serverless and stalls tens of seconds on a cold replica,
+# which a sequential per-token decode cannot absorb. Bills at ~1.25-1.5x; set empty for
+# the standard path.
+export BLOOM_API_SERVICE_TIER="${BLOOM_API_SERVICE_TIER-priority}"
 
 export BLOOM_BEHAVIOR_FILE=prompts/7_self_harm_encouragement.yaml
 export BLOOM_NUM_SCENARIOS=$SCEN

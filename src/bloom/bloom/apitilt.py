@@ -180,6 +180,12 @@ class ApiTiltTarget:
         # same latency. requests.Session is not documented thread-safe, and the driven
         # decode runs ~30 calls in flight, so each thread gets its own.
         self._tl = threading.local()
+        # Fireworks' priority serving path. Standard is serverless and a request routed to
+        # a cold replica stalls tens of seconds in pure time-to-first-token; priority
+        # suppresses that (measured: worst TTFT 5.1s against 26.8s on standard at the same
+        # load, and 0.26-1.5s vs 4.9-6.3s serial). It bills at ~1.25-1.5x, so it is opt-in.
+        # Verified to work on /completions BOTH with and without echo.
+        self.service_tier = (os.environ.get("BLOOM_API_SERVICE_TIER", "") or "").strip() or None
         self.n_calls = 0
         self.n_prompt_tokens = 0
         self.n_gen_tokens = 0
@@ -206,6 +212,8 @@ class ApiTiltTarget:
         return s
 
     def _post(self, body: Dict, affinity: Optional[str] = None) -> Dict:
+        if self.service_tier:
+            body = dict(body, service_tier=self.service_tier)
         # Fireworks' prompt cache lives in ONE replica, so a sequence of incrementally
         # growing prompts only reuses its prefix if every call lands on the same one.
         # Without this header the driven decode below scatters across replicas and
@@ -357,7 +365,8 @@ class ApiTiltTarget:
 
     def stats(self) -> str:
         return (f"{self.n_calls} calls, {self.n_retries} retries, "
-                f"{self.n_prompt_tokens} prompt tok, {self.n_gen_tokens} generated tok")
+                f"{self.n_prompt_tokens} prompt tok, {self.n_gen_tokens} generated tok"
+                + (f", tier={self.service_tier}" if self.service_tier else ""))
 
 
 def load_api_target(target_model_id: str) -> Dict:
