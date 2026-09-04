@@ -144,7 +144,7 @@ class ApiTiltTarget:
 
     def __init__(self, model: str, provider: str = "fireworks",
                  template_path: str = "", bos_token: str = _DEFAULT_BOS,
-                 timeout: float = 8.0, max_retries: int = 8):
+                 timeout: float = 25.0, max_retries: int = 6):
         if provider not in _PROVIDERS:
             raise RuntimeError(
                 f"BLOOM_TARGET_API={provider!r} unknown; known providers: {sorted(_PROVIDERS)}")
@@ -154,14 +154,12 @@ class ApiTiltTarget:
             raise RuntimeError(
                 f"{p['key_env']} is not set — the api_tilt engine needs it to reach {provider}.")
         self.model, self.provider, self.base = model, provider, p["base"]
-        # 8s. On the priority tier successful calls run 2.8-3.5s median and topped out at
-        # ~8.9s across every cell measured, so 8s cuts the tail without discarding much
-        # that would have returned -- and what it does discard costs about what waiting
-        # would have: abandoning at 8s and retrying at the ~3s median beats absorbing a
-        # cold replica's tens of seconds of time-to-first-token. More retries are budgeted
-        # (8) precisely because each one is now cheap.
-        # Caveat: this is set from medians and maxima, not full percentiles. If the retry
-        # lines in a run log become frequent, the timeout is too tight for the conditions.
+        # 25s, measured at the prompt sizes and concurrency this engine actually uses
+        # (200-2000 token contexts, 30 in flight). Median is 1.3-4.5s and p90 is 5-15s
+        # regardless of prompt length -- length is NOT the driver, a fat tail of 30-60s
+        # cold starts is -- so 25s sits above p90 while still abandoning the tail.
+        # 8s was measured on 20-token prompts and killed every run: it fell below p90, so
+        # calls failed constantly.
         self.timeout = float(os.environ.get("BLOOM_API_TIMEOUT", "") or timeout)
         self.max_retries = max_retries
         self.n_retries = 0
@@ -220,10 +218,15 @@ class ApiTiltTarget:
         # growing prompts only reuses its prefix if every call lands on the same one.
         # Without this header the driven decode below scatters across replicas and
         # silently pays full prefill every step (verified: cached_tokens goes 899 -> 0).
-        hdr = {"x-session-affinity": affinity} if affinity else None
         last = ""
         for attempt in range(self.max_retries):
             _throttled = False      # True only for 429/5xx, which want real backoff
+            # Affinity pins this request to ONE replica so the prefix cache hits. That is
+            # what we want on the first attempt and exactly what we do NOT want after a
+            # failure: a cold replica would receive every retry and time out identically,
+            # which is how a single bad replica killed whole runs. Retries drop the header
+            # so they can route somewhere else, trading a cache miss for a live replica.
+            hdr = {"x-session-affinity": affinity} if (affinity and attempt == 0) else None
             try:
                 r = self._session().post(self.base + "/completions", json=body,
                                          headers=hdr, timeout=self.timeout)
