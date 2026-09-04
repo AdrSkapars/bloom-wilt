@@ -463,11 +463,21 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         j_ids = client.prefix_ids(j_prefix)
 
         gen, t_lps, j_lps, n_fallback = [], [], [], 0
+        truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
                 ft = ex.submit(client.next_topk, t_ids, top_k, temperature, aff + "-t")
                 fj = ex.submit(client.next_topk, j_ids, top_k, temperature, aff + "-j")
-                tr, jr = ft.result(), fj.result()
+                try:
+                    tr, jr = ft.result(), fj.result()
+                except RuntimeError as e:
+                    # A call that exhausts its retries used to propagate out of the thread
+                    # pool and abort the ENTIRE round -- every scenario, every completed
+                    # turn, discarded because of one bad request. End this scenario's reply
+                    # here instead: a short transcript is worth incomparably more than
+                    # losing the other fourteen and the work already done.
+                    truncated = str(e)
+                    break
                 tmap = dict(tr["top"])
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
                 # z = l_target + beta * l_elicited, over this step's candidates only
@@ -548,7 +558,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         return {"best_text": res.decode(gen).strip(), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
-                "n_fallback": n_fallback}
+                "n_fallback": n_fallback, "truncated": truncated}
 
     jobs = list(enumerate(target_msgs_batch))
     if len(jobs) == 1:
@@ -557,9 +567,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         with ThreadPoolExecutor(max_workers=min(len(jobs), 16)) as ex:
             out = list(ex.map(_one, jobs))
     nf = sum(o.pop("n_fallback") for o in out)
+    trunc = [o.pop("truncated") for o in out]
+    ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
     print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
-          f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)", flush=True)
+          f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)"
+          + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
+             f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     return out
 
 
