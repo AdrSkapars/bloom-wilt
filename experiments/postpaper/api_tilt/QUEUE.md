@@ -59,7 +59,14 @@ across the grid it is a far better rule than combined and the beta sweep was run
 weaker one.
 
   - [x] DeepSeek self_harm (done: 81.3 @ 56.46%)
-  - [ ] GLM x3, gpt-oss x3          <- RUNNING, moved ahead (endpoint status above)
+  - [x] gpt-oss self_harm (done 00:33, 6m45s, 0 retries): 21.3 @ 68.77%
+        vs vanilla 17.3 @ 78.79%, combined 16.0 @ 76.95%, elicited-only 100.0 @ 41.83%
+        => 4.8% captured, against combined's -1.6%. Directionally what the peakedness
+        account predicts (elicited-pick > combined-pick on a confident model) but NOT the
+        DeepSeek-scale rescue: +4.0 presence for -10.0 plausibility is a bad trade, and on
+        n=15 with judge steps of 10 a 4-point shift is ~half a scenario. Inside noise on
+        one cell -- do not call it an effect until goblin/selfpres land.
+  - [ ] GLM x3 (running), gpt-oss goblin + selfpres (running)
   - [ ] DeepSeek goblin, selfpres   <- LAST, re-probe DeepSeek latency before launching
 
 **B. `BLOOM_API_PICK=combined BLOOM_API_BETA=2`** -- the existing rule at the beta that
