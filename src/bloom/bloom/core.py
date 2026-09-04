@@ -1102,17 +1102,25 @@ def batch_generate_local(
         return []
 
     if isinstance(lm, ApiModel):
-        outs: List[str] = []
-        for msgs in messages_list:
-            resp = litellm_chat(
+        def _one_turn(msgs):
+            return parse_message(litellm_chat(
                 model_id=lm.model_id,
                 messages=list(msgs),
                 max_tokens=max_new_tokens,
                 reasoning_effort=lm.reasoning_effort,
                 temperature=temperature,
-            )
-            outs.append(parse_message(resp)["content"] or "")
-        return outs
+            ))["content"] or ""
+        # Serial by default, so nothing on the paper's path changes. BLOOM_ROLLOUT_CONCURRENCY
+        # > 1 issues these independent evaluator turns concurrently instead; the judgment
+        # stage has always done this (pipeline.py's semaphore), the rollout evaluator never
+        # did, so a 15-scenario turn paid 15 round trips end to end. Results are unaffected:
+        # the calls share no state and are collected back in order.
+        _conc = int(os.environ.get("BLOOM_ROLLOUT_CONCURRENCY", "1") or 1)
+        if _conc > 1 and len(messages_list) > 1:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=min(_conc, len(messages_list))) as _ex:
+                return list(_ex.map(_one_turn, messages_list))
+        return [_one_turn(msgs) for msgs in messages_list]
 
     prompts: List[str] = []
     for msgs in messages_list:

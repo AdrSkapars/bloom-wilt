@@ -49,9 +49,8 @@ import json
 import math
 import os
 import random
+import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -169,6 +168,12 @@ class ApiTiltTarget:
         from jinja2 import Environment
         self._tpl = Environment().from_string(Path(template_path).read_text(encoding="utf-8"))
         self._bos = bos_token
+        # One pooled, keep-alive session PER THREAD. A fresh TCP+TLS connection per call
+        # is not merely slower -- measured against this endpoint it failed 3 of 12 times
+        # (hung sockets, seen as CLOSE_WAIT), while a pooled session failed 0 of 12 at the
+        # same latency. requests.Session is not documented thread-safe, and the driven
+        # decode runs ~30 calls in flight, so each thread gets its own.
+        self._tl = threading.local()
         self.n_calls = 0
         self.n_prompt_tokens = 0
         self.n_gen_tokens = 0
@@ -181,27 +186,43 @@ class ApiTiltTarget:
                                 bos_token=self._bos)
 
     # ── HTTP ────────────────────────────────────────────────────────────────────────
+    def _session(self):
+        s = getattr(self._tl, "s", None)
+        if s is None:
+            import requests
+            s = requests.Session()
+            s.headers.update(self._hdr)
+            # max_retries=0: the loop below owns retry policy, so urllib3 must not also
+            # retry underneath it (that would multiply the wait before we ever see a failure).
+            s.mount("https://", requests.adapters.HTTPAdapter(
+                pool_connections=4, pool_maxsize=8, max_retries=0))
+            self._tl.s = s
+        return s
+
     def _post(self, body: Dict, affinity: Optional[str] = None) -> Dict:
-        data = json.dumps(body).encode()
         # Fireworks' prompt cache lives in ONE replica, so a sequence of incrementally
         # growing prompts only reuses its prefix if every call lands on the same one.
         # Without this header the driven decode below scatters across replicas and
         # silently pays full prefill every step (verified: cached_tokens goes 899 -> 0).
-        hdr = dict(self._hdr, **({"x-session-affinity": affinity} if affinity else {}))
+        hdr = {"x-session-affinity": affinity} if affinity else None
         last = ""
         for attempt in range(self.max_retries):
-            req = urllib.request.Request(self.base + "/completions", data=data, headers=hdr)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                r = self._session().post(self.base + "/completions", json=body,
+                                         headers=hdr, timeout=self.timeout)
+                if r.status_code == 200:
                     self.n_calls += 1
-                    return json.loads(r.read())
-            except urllib.error.HTTPError as e:
-                last = f"HTTP {e.code}: {e.read().decode()[:300]}"
+                    return r.json()
+                last = f"HTTP {r.status_code}: {r.text[:300]}"
                 # 4xx other than rate-limit is a request bug — retrying just burns time.
-                if e.code not in (408, 409, 429) and e.code < 500:
+                if r.status_code not in (408, 409, 429) and r.status_code < 500:
                     raise RuntimeError(f"api_tilt request rejected — {last}")
+            except RuntimeError:
+                raise
             except Exception as e:                      # timeout / connection reset
                 last = f"{type(e).__name__}: {e}"
+                # A broken pooled connection must not be reused for the retry.
+                self._tl.s = None
             # Retries were previously silent, which made a hung socket look exactly like
             # ordinary slowness in the run log. Say so.
             self.n_retries += 1

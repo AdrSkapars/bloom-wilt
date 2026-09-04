@@ -50,6 +50,9 @@ export BLOOM_EVAL_MODEL=openrouter/google/gemma-4-26b-a4b-it
 export BLOOM_JUDGE_MODEL=openrouter/google/gemma-4-26b-a4b-it
 export BLOOM_EVAL_THINKING=0 BLOOM_JUDGE_THINKING=0
 export BLOOM_MAX_CONCURRENT="${BLOOM_MAX_CONCURRENT:-15}"
+# Issue the per-scenario evaluator turns concurrently rather than one after another.
+# Off (1) by default in the pipeline so the paper's path is untouched; on here.
+export BLOOM_ROLLOUT_CONCURRENCY="${BLOOM_ROLLOUT_CONCURRENCY:-15}"
 
 export BLOOM_BEHAVIOR_FILE=prompts/7_self_harm_encouragement.yaml
 export BLOOM_NUM_SCENARIOS=$SCEN
