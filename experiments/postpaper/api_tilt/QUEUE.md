@@ -10,8 +10,33 @@ Two settings per cell:
 
 ## Running
 
-- [ ] `combined_sample b=0.5`, then `combined_sample b=2`  (self_harm, DeepSeek)
-- [ ] `combined b=1.5`  (self_harm, DeepSeek)
+- [ ] chain A GLM: self_harm, goblin, selfpres  (`A_glm.log`)
+- [ ] chain A gpt-oss: self_harm, goblin, selfpres  (`A_gptoss.log`)
+
+## ENDPOINT STATUS -- DeepSeek degraded, column A reordered (09-05 00:25)
+
+DeepSeek-V4-Flash is currently ~10x slower than it was earlier tonight. Probe on a
+five-token prompt, all three models, both service tiers:
+
+    dsv4    priority  11.56s  ttft=10.94    dsv4    default  9.20s  ttft=8.50
+    glm     priority   3.23s  ttft=2.31     glm     default  0.96s  ttft=0.31
+    gptoss  priority   0.72s  ttft=0.17     gptoss  default  0.66s  ttft=0.06
+
+`X-Ratelimit-Over-Limit: no`, so this is capacity on the serverless replica, not throttling
+of our key. For reference DeepSeek served a 961-token prompt in 1315ms earlier tonight.
+
+The overlap decode makes two calls per generated token, so an 11s TTFT puts essentially
+every request past the 25s timeout: the first column-A run (DeepSeek goblin) logged 110
+retries and zero completed scenarios in eight minutes. Killed it -- waiting would not have
+cleared it, and it was competing for the same capacity.
+
+**Reorder: GLM and gpt-oss run column A now; DeepSeek goes last, re-probed first.** Do not
+raise the timeout to push DeepSeek through -- at 11s/call the arm would take hours and the
+throughput cost is not worth it while two healthy models are idle.
+
+The killed run left `goblin|selfpres/deepseek_v4_flash/api_overlap_elicited_15s/round_1`
+holding valid cfg/ideation/understanding (15 scenarios, all parse). Those stages are
+auditor-side and independent of the decode rule, so they are KEPT for reuse, not deleted.
 
 ## Queued — DeepSeek-V4-Flash
 
@@ -34,8 +59,8 @@ across the grid it is a far better rule than combined and the beta sweep was run
 weaker one.
 
   - [x] DeepSeek self_harm (done: 81.3 @ 56.46%)
-  - [ ] DeepSeek goblin, selfpres
-  - [ ] GLM x3, gpt-oss x3
+  - [ ] GLM x3, gpt-oss x3          <- RUNNING, moved ahead (endpoint status above)
+  - [ ] DeepSeek goblin, selfpres   <- LAST, re-probe DeepSeek latency before launching
 
 **B. `BLOOM_API_PICK=combined BLOOM_API_BETA=2`** -- the existing rule at the beta that
 worked best on DeepSeek self_harm (48.0 @ 66.96%, against 26.0 at beta=1).
