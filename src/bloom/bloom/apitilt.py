@@ -144,7 +144,7 @@ class ApiTiltTarget:
 
     def __init__(self, model: str, provider: str = "fireworks",
                  template_path: str = "", bos_token: str = _DEFAULT_BOS,
-                 timeout: float = 45.0, max_retries: int = 5):
+                 timeout: float = 15.0, max_retries: int = 5):
         if provider not in _PROVIDERS:
             raise RuntimeError(
                 f"BLOOM_TARGET_API={provider!r} unknown; known providers: {sorted(_PROVIDERS)}")
@@ -154,6 +154,12 @@ class ApiTiltTarget:
             raise RuntimeError(
                 f"{p['key_env']} is not set — the api_tilt engine needs it to reach {provider}.")
         self.model, self.provider, self.base = model, provider, p["base"]
+        # 15s, not 45s. Fireworks serves this model at ~1.7-2s warm, but a request routed
+        # to a COLD replica stalls ~36s in pure time-to-first-token (their own
+        # Fireworks-Server-Time-To-First-Token header says so, with
+        # X-Ratelimit-Over-Limit: no). Waiting out a cold start costs more than abandoning
+        # it and retrying, which may land on a warm replica; pooled connections make the
+        # retry cheap.
         self.timeout = float(os.environ.get("BLOOM_API_TIMEOUT", "") or timeout)
         self.max_retries = max_retries
         self.n_retries = 0
