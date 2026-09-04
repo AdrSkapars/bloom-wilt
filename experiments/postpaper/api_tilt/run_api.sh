@@ -101,7 +101,11 @@ case "$ARM" in
     export BLOOM_API_BETA=$BETA
     # beta=1 keeps the original folder name so the existing runs stay addressable.
     if [ "$BETA" = "1" ]; then BSUF=""; else BSUF="_b${BETA}"; fi
-    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}${BSUF}${SUF}_15s
+    # BLOOM_JAIL_PREFILL=0 drops the behaviour file's prefill from the ELICITED context
+    # (it conditions the jail distribution but is never sampled). Ablation of whether the
+    # prefill is doing the work; tagged in the folder so it never overwrites a normal run.
+    if [ "${BLOOM_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
+    export BLOOM_FOLDER=runs_dsv4/self_harm/deepseek_v4_flash/api_overlap_${PICK}${BSUF}${SUF}${PSUF}_15s
     export BLOOM_JAIL_MODEL=$TARGET
     export BLOOM_API_RULE=overlap
     export BLOOM_JAIL_FLOOR=0
