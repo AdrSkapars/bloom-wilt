@@ -82,6 +82,30 @@ Diagnose before killing: check whether the endpoint itself is healthy with a sin
 direct call, and read `Fireworks-Server-Time-To-First-Token` on a response -- if TTFT is
 tens of seconds, it is a cold replica and ours to route around, not a bug in the code.
 
+## Process hazards -- all three of these bit us on 2026-09-04
+
+1. **Never edit a shell script while a run is executing it.** Bash reads scripts
+   incrementally by byte offset, so an edit shifts the file underneath the running shell
+   and it resumes mid-token. Cost two spurious `FAILED` markers on runs whose data was
+   actually fine. Write a NEW file instead (this is why `run_cell.sh` exists alongside
+   `run_api.sh`), or wait for the run to finish.
+
+2. **TaskStop kills the bash wrapper, NOT the python child.** A killed run left an orphan
+   that ran for an hour, consumed API capacity and inflated the retry counts of the runs
+   that were supposed to have the endpoint to themselves. After stopping a task, always
+   check `Get-Process python` and kill survivors explicitly.
+
+3. **Never `rm -rf` a run directory that might still be written.** Deleting the aborted
+   run's folder while its orphan was still alive produced a directory with transcripts but
+   no `cfg.json` -- complete-looking data whose settings cannot be verified. Quarantine
+   with `mv`, never delete, and only once nothing is running.
+
+## Launcher
+
+`run_cell.sh` is the general one: `BEH=<beh> MODEL=<model> run_cell.sh <arm> [rounds]`.
+`run_api.sh` is the older self_harm + DeepSeek-only version, kept because runs referenced
+it; prefer run_cell.sh for anything new.
+
 ## Watch during runs, not just after
 
 - `[api_tilt] retry` lines — a few are normal, hundreds mean the endpoint is degraded
