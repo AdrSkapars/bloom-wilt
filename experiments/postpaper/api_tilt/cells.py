@@ -17,7 +17,8 @@ RUNS = os.path.join(HERE, "..", "runs_dsv4")
 BEHS = [("self_harm", "self-harm"), ("goblin", "goblin"), ("selfpres", "self-pres")]
 MODELS = [("deepseek_v4_flash", "DeepSeek-V4-Flash"), ("glm_5p3_flash", "GLM-5.3-Flash"),
           ("gpt_oss_120b", "gpt-oss-120b"), ("qwen3p7_plus", "Qwen3.7-Plus")]
-ARMS = [("api_vanilla_15s", "vanilla"), ("api_overlap_combined_15s", "overlap b=1")]
+ARMS = [("api_vanilla_15s", "vanilla"), ("api_overlap_combined_15s", "overlap b=1"),
+        ("api_elicited_15s", "elicited")]
 
 
 def cell(beh, model, arm):
@@ -41,26 +42,29 @@ for mkey, mlab in MODELS:
     for bkey, blab in BEHS:
         v = cell(bkey, mkey, "api_vanilla_15s")
         o = cell(bkey, mkey, "api_overlap_combined_15s")
-        if v or o:
-            rows.append((mlab, blab, v, o))
+        e = cell(bkey, mkey, "api_elicited_15s")
+        if v or o or e:
+            rows.append((mlab, blab, v, o, e))
 
 if not rows:
     raise SystemExit("no cells found")
 
 print(f"{'model':18s} {'behaviour':10s} {'vanilla':>16s} {'overlap b=1':>16s} "
-      f"{'d presence':>10s} {'d prob':>8s}")
-print("-" * 84)
+      f"{'elicited':>16s} {'captured':>9s}")
+print("-" * 92)
 last = None
-for mlab, blab, v, o in rows:
+for mlab, blab, v, o, e in rows:
     m = mlab if mlab != last else ""
     last = mlab
-    vs = f"{v[1]:5.1f} @ {v[2]:5.2f}%" if v else "        --      "
-    os_ = f"{o[1]:5.1f} @ {o[2]:5.2f}%" if o else "        --      "
-    if v and o:
-        dp, dq = f"{o[1]-v[1]:+10.1f}", f"{o[2]-v[2]:+7.2f}"
-    else:
-        dp = dq = "        --"[:10] if not (v and o) else ""
-    print(f"{m:18s} {blab:10s} {vs:>16s} {os_:>16s} {dp:>10s} {dq:>8s}")
+    f = lambda c: f"{c[1]:5.1f} @ {c[2]:5.2f}%" if c else "       --       "
+    # Fraction of the ACHIEVABLE gain the method captures: elicited-only is what the jail
+    # context reaches unconstrained, so (overlap - vanilla) / (elicited - vanilla) says how
+    # much of that the overlap rule recovers. Raw deltas hide that a behaviour with a low
+    # ceiling and one with a high ceiling are not comparable.
+    cap = ""
+    if v and o and e and (e[1] - v[1]) > 1e-9:
+        cap = f"{100*(o[1]-v[1])/(e[1]-v[1]):8.1f}%"
+    print(f"{m:18s} {blab:10s} {f(v):>16s} {f(o):>16s} {f(e):>16s} {cap:>9s}")
 
 print("\npresence = mean behaviour presence 0-100 (judge score x10), round 1, 15 scenarios.")
 print("A cell needs the behaviour to be REACHABLE from the target's own top-5: the overlap")

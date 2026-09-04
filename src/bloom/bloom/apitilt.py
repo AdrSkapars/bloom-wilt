@@ -186,6 +186,11 @@ class ApiTiltTarget:
                            extensions=[jinja2.ext.loopcontrols])
         _env.filters["tojson"] = lambda o, **kw: json.dumps(o, **kw)
         _env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(RuntimeError(m))
+        # gpt-oss's harmony template calls strftime_now to stamp a date into the system
+        # block. NOTE this makes its prompts date-dependent: runs on different days are not
+        # byte-identical, unlike DeepSeek's and GLM's.
+        import datetime as _dt
+        _env.globals["strftime_now"] = lambda f: _dt.datetime.now().strftime(f)
         self._tpl = _env.from_string(Path(template_path).read_text(encoding="utf-8"))
         self._bos = bos_token
         # One pooled, keep-alive session PER THREAD. A fresh TCP+TLS connection per call
