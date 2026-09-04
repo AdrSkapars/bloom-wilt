@@ -92,7 +92,12 @@ class _TokenResolver:
             s = self._tok.decode([i], skip_special_tokens=False)
             if s not in self._by_text:      # 36 byte-fallback strings collide; keep the lowest id
                 self._by_text[s] = i
-        self.eos_id = self._tok.get_vocab().get("<｜end▁of▁sentence｜>", 1)
+        # EOS differs per model (DeepSeek uses a fullwidth-bar token, GLM uses
+        # <|endoftext|>), so take it from the vocab rather than assuming one.
+        _v = self._tok.get_vocab()
+        self.eos_id = next((_v[k] for k in ("<｜end▁of▁sentence｜>",
+                                            "<|endoftext|>", "<|im_end|>", "</s>")
+                            if k in _v), 1)
 
     def id_of(self, text: str) -> Optional[int]:
         return self._by_text.get(text)
@@ -171,8 +176,17 @@ class ApiTiltTarget:
                 "api_tilt needs BLOOM_TARGET_CHAT_TEMPLATE — prompts are rendered here, not by "
                 "a tokenizer, so the template is the only thing pinning the API's tokenization "
                 "to the local run's.")
+        # Match transformers' _compile_jinja_template exactly: loopcontrols for templates
+        # using {% break %} (GLM-5.3 does), plus trim_blocks/lstrip_blocks and the tojson
+        # filter it installs. Anything else risks rendering a prompt the server tokenizes
+        # differently from what we think we sent.
+        import jinja2.ext
         from jinja2 import Environment
-        self._tpl = Environment().from_string(Path(template_path).read_text(encoding="utf-8"))
+        _env = Environment(trim_blocks=True, lstrip_blocks=True,
+                           extensions=[jinja2.ext.loopcontrols])
+        _env.filters["tojson"] = lambda o, **kw: json.dumps(o, **kw)
+        _env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(RuntimeError(m))
+        self._tpl = _env.from_string(Path(template_path).read_text(encoding="utf-8"))
         self._bos = bos_token
         # One pooled, keep-alive session PER THREAD. A fresh TCP+TLS connection per call
         # is not merely slower -- measured against this endpoint it failed 3 of 12 times

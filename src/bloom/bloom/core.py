@@ -110,6 +110,9 @@ _USES_THINK_BLOCK = {
     # ...and the same weights served over a hosted API (engine=api_tilt). Registered under
     # the provider's own model path because that is what the target id carries.
     "accounts/fireworks/models/deepseek-v4-flash-0731": False,
+    # GLM-5.3's template ends `<|assistant|><think>` on add_generation_prompt, i.e. it
+    # AUTO-OPENS the think block -- verified by reading chat_template.jinja, not assumed.
+    "accounts/fireworks/models/glm-5p3-flash": True,
     "deepseek-ai/deepseek-v4-flash-0731-api": False,   # together.ai names it this way
     # abliterated corruptor variants (same arch/vocab as their originals)
     "huihui-ai/huihui-qwen3.5-4b-abliterated": True,
@@ -118,6 +121,12 @@ _USES_THINK_BLOCK = {
     "huihui-ai/llama-3.2-3b-instruct-abliterated": False,   # added for abliterated-jail experiment
 }
 _THINK_PREFILL = "<think>\n\n</think>\n"
+# Per-model closer, for templates whose no-think wrapper is not the Qwen3 form above.
+# GLM-5.3 already emits `<think>` itself, so appending the full Qwen string would
+# nest a second opening tag; it needs only the CLOSER. Absent = use _THINK_PREFILL.
+_THINK_PREFILL_OVERRIDE = {
+    "accounts/fireworks/models/glm-5p3-flash": "</think>",
+}
 
 
 def normalize(name: str) -> str:
@@ -146,7 +155,9 @@ def uses_think_block(name: str) -> bool:
 
 def think_prefix(name: str) -> str:
     """Closed-<think> prefill text for this model ('' if it has no auto think block)."""
-    return _THINK_PREFILL if uses_think_block(name) else ""
+    if not uses_think_block(name):
+        return ""
+    return _THINK_PREFILL_OVERRIDE.get(normalize(name), _THINK_PREFILL)
 
 
 _NO_THINK_PREFIX = ""          # target wrapper; set by _set_think_prefixes()
