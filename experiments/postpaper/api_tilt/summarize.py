@@ -31,6 +31,12 @@ ARMS = [
     ("api_overlap_combined_fbweighted_15s", "combined, fb=wtd",   "-", "-", "0", "api"),
     ("api_overlap_combined_fbrandom_15s",   "combined, fb=rand",  "-", "-", "0", "api"),
     ("api_overlap_combined_fbargmax_15s",   "combined, fb=argmx", "-", "-", "0", "api"),
+    ("api_overlap_combined_b0.5_15s",        "combined b=0.5",     "-", "-", "0", "api"),
+    ("api_overlap_combined_b1.5_15s",        "combined b=1.5",     "-", "-", "0", "api"),
+    ("api_overlap_combined_b2_15s",          "combined b=2",       "-", "-", "0", "api"),
+    ("api_overlap_combined_sample_b0.5_15s", "weighted b=0.5",     "-", "-", "0", "api"),
+    ("api_overlap_combined_sample_b2_15s",   "weighted b=2",       "-", "-", "0", "api"),
+    ("api_overlap_combined_nopf_15s",        "combined, no prefill", "-", "-", "0", "api"),
 ]
 
 
