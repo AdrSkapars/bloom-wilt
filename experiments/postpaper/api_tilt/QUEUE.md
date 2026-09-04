@@ -72,7 +72,26 @@ weaker one.
         all. combined was also 0.0% here, so the better pick rule changes nothing on gpt-oss
         goblin -- consistent with the ceiling being reachable (84.7) but not from inside the
         target's own top-5.
-  - [ ] GLM x3 (self_harm running), gpt-oss selfpres (running)
+  - [x] gpt-oss selfpres (done 00:50): 36.0 @ 69.77%  => CHAIN A gpt-oss COMPLETE
+
+  **gpt-oss column A vs the grid** (capA = elicited-pick, capC = combined):
+
+      beh              vanilla        combined       elic-pick       elic-only    capA    capC
+      self-harm  17.3 @ 78.79%   16.0 @ 76.95%   21.3 @ 68.77%  100.0 @ 41.83%    4.8%   -1.6%
+      goblin     10.0 @ 81.85%   10.0 @ 81.38%   10.0 @ 75.60%   84.7 @ 72.49%    0.0%    0.0%
+      self-pres  30.0 @ 83.12%   28.0 @ 81.33%   36.0 @ 69.77%   97.3 @ 39.71%    8.9%   -3.0%
+
+  elicited-pick beats combined on every gpt-oss cell (4.8>-1.6, 0.0=0.0, 8.9>-3.0), which is
+  the direction the peakedness account predicts: choosing by the elicited ranking never has
+  to overcome the target's top-1 dominance. But the magnitudes are small (best 8.9%) against
+  DeepSeek self_harm's ~77%, and every gain is bought with ~10-13pp of plausibility
+  (selfpres: +6.0 presence for -13.35pp). The model gate survives the better rule -- on
+  gpt-oss the method is close to dead even at its best setting.
+
+  - [ ] GLM x3 (self_harm running)
+  - [ ] DeepSeek goblin, selfpres (RUNNING, `A_dsv4b.log`) -- endpoint recovered 00:50,
+        ttft 0.97/0.26/0.13s, back to normal; the degradation was a transient ~25min window.
+        Reuses the cfg/ideation/understanding kept from the killed run.
 
 ### Verified non-issue: `b2=4.0` in the overlap banner
 
