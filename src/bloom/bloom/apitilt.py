@@ -144,7 +144,7 @@ class ApiTiltTarget:
 
     def __init__(self, model: str, provider: str = "fireworks",
                  template_path: str = "", bos_token: str = _DEFAULT_BOS,
-                 timeout: float = 15.0, max_retries: int = 5):
+                 timeout: float = 8.0, max_retries: int = 8):
         if provider not in _PROVIDERS:
             raise RuntimeError(
                 f"BLOOM_TARGET_API={provider!r} unknown; known providers: {sorted(_PROVIDERS)}")
@@ -154,12 +154,14 @@ class ApiTiltTarget:
             raise RuntimeError(
                 f"{p['key_env']} is not set — the api_tilt engine needs it to reach {provider}.")
         self.model, self.provider, self.base = model, provider, p["base"]
-        # 15s, not 45s. Fireworks serves this model at ~1.7-2s warm, but a request routed
-        # to a COLD replica stalls ~36s in pure time-to-first-token (their own
-        # Fireworks-Server-Time-To-First-Token header says so, with
-        # X-Ratelimit-Over-Limit: no). Waiting out a cold start costs more than abandoning
-        # it and retrying, which may land on a warm replica; pooled connections make the
-        # retry cheap.
+        # 8s. On the priority tier successful calls run 2.8-3.5s median and topped out at
+        # ~8.9s across every cell measured, so 8s cuts the tail without discarding much
+        # that would have returned -- and what it does discard costs about what waiting
+        # would have: abandoning at 8s and retrying at the ~3s median beats absorbing a
+        # cold replica's tens of seconds of time-to-first-token. More retries are budgeted
+        # (8) precisely because each one is now cheap.
+        # Caveat: this is set from medians and maxima, not full percentiles. If the retry
+        # lines in a run log become frequent, the timeout is too tight for the conditions.
         self.timeout = float(os.environ.get("BLOOM_API_TIMEOUT", "") or timeout)
         self.max_retries = max_retries
         self.n_retries = 0
@@ -221,6 +223,7 @@ class ApiTiltTarget:
         hdr = {"x-session-affinity": affinity} if affinity else None
         last = ""
         for attempt in range(self.max_retries):
+            _throttled = False      # True only for 429/5xx, which want real backoff
             try:
                 r = self._session().post(self.base + "/completions", json=body,
                                          headers=hdr, timeout=self.timeout)
@@ -231,6 +234,7 @@ class ApiTiltTarget:
                 # 4xx other than rate-limit is a request bug — retrying just burns time.
                 if r.status_code not in (408, 409, 429) and r.status_code < 500:
                     raise RuntimeError(f"api_tilt request rejected — {last}")
+                _throttled = True
             except RuntimeError:
                 raise
             except Exception as e:                      # timeout / connection reset
@@ -241,7 +245,15 @@ class ApiTiltTarget:
             # ordinary slowness in the run log. Say so.
             self.n_retries += 1
             print(f"  [api_tilt] retry {attempt + 1}/{self.max_retries} after {last}", flush=True)
-            time.sleep(min(30.0, 2.0 ** attempt) * (0.5 + random.random()))
+            # Back off only for the failures backoff is FOR. A timeout here means the
+            # request hit a cold replica, so the useful response is to try again promptly
+            # on a fresh connection and hope to route elsewhere -- sleeping just adds the
+            # delay back that the short timeout was meant to avoid. Rate limiting and 5xx
+            # are the cases that genuinely want exponential backoff.
+            if _throttled:
+                time.sleep(min(30.0, 2.0 ** attempt) * (0.5 + random.random()))
+            else:
+                time.sleep(0.15 + 0.35 * random.random())
         raise RuntimeError(f"api_tilt request failed after {self.max_retries} attempts — {last}")
 
     # ── the two primitives ──────────────────────────────────────────────────────────
