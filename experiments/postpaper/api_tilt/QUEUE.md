@@ -34,7 +34,13 @@ goes +5.6pp (round 1) -> +2.4pp (free selection) -> ~0 (oracle only). Last night
 Whether 2.4pp justifies 2x the API calls is a judgement call; leaning no.
 
 
-## !!! BLOCKED 05-09 04:55 -- FIREWORKS ACCOUNT SUSPENDED (needs user action)
+## RECOVERED 05-09 05:53 -- account active again, queue resumed
+
+Probe returned 200 at 05:53 (suspended 04:55-05:53, ~1 hour). Relaunched immediately:
+  * `R5b_gptoss_elic.log` -- elicited-only 5 rounds, gpt-oss self_harm (MATCHED CONTROL)
+  * `R5b_glm_goblin.log`  -- GLM goblin elic-pick 5 rounds (re-run; round_1 reused)
+
+## (historical) BLOCKED 05-09 04:55 -- FIREWORKS ACCOUNT SUSPENDED
 
     HTTP 412 PRECONDITION_FAILED
     "Account adr-skapars-7nj3j22k is suspended, possibly due to reaching the monthly
@@ -74,10 +80,10 @@ about the method.
     transcript scoring 10 while the other two scored 80 and 90.
 
 ## QUEUED (blocked on billing)
-  - [ ] elicited-only 5 rounds, gpt-oss self_harm   (matched control -- WITHOUT this the
-        convergence claim cannot be tested on a second cell)
-  - [ ] elicited-only 5 rounds, GLM goblin          (matched control)
-  - [ ] re-run GLM goblin 5-round (round_2 was lost to the suspension)
+  - [~] elicited-only 5 rounds, gpt-oss self_harm  RUNNING (matched control; gpt-oss
+        elic-pick has 3 clean rounds so the comparison is made at R=3)
+  - [~] re-run GLM goblin 5-round                  RUNNING
+  - [ ] elicited-only 5 rounds, GLM goblin          (matched control, after the above)
   - [x] a real selector instead of oracle -- DONE, freeselect.py (see top of file).
 
 
