@@ -90,6 +90,7 @@ def run_rollout_api(
         "api_top_k": int(jail_cfg.get("top_k", 5) or 5),
         "api_fb_floor": float(jail_cfg.get("fb_floor", 0.0) or 0.0),
         "api_fb_tries": int(jail_cfg.get("fb_tries", 5) or 5),
+        "api_floor_overlap": bool(jail_cfg.get("floor_overlap", False)),
     }
 
     if evaluator_model_id.startswith("local/"):

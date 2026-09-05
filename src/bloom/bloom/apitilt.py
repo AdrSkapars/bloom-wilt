@@ -545,10 +545,14 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     _ob1 = jail_runtime_cfg.get("b1")
     ob1 = float(_ob1) if _ob1 is not None else 1.0
     ob2 = float(jail_runtime_cfg.get("b2", 1.0))
-    # Minimum TARGET probability (percent) an elicited candidate must reach to be emitted at
-    # a fallback; below it the position reverts to target_sample. 0 disables. Read by
-    # jail_maxtarget and jail_resample, which have already priced their candidates.
+    # Minimum TARGET probability (percent) a candidate must reach to be emitted. 0 disables.
+    # At a fallback: jail_maxtarget/jail_resample reject below it (they have already priced
+    # their candidates). With floor_overlap, it also filters the OVERLAP set -- free, since
+    # every overlap member is in the target's top-k and so already priced. Without that, the
+    # overlap path can emit a sub-floor token the fallback floor never sees.
     fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
+    floor_overlap = bool(jail_runtime_cfg.get("api_floor_overlap", False))
+    _floor_lp = math.log(fb_floor / 100.0) if fb_floor > 0.0 else None
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
@@ -567,6 +571,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
 
         gen, t_lps, j_lps, n_fallback, n_unres, n_floored = [], [], [], 0, 0, 0
         n_resamples = 0
+        n_ovfloored = 0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -584,6 +589,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     break
                 tmap = dict(tr["top"])
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
+                if floor_overlap and _floor_lp is not None:
+                    # Drop overlap members the target rates below the floor. Emptying the set
+                    # turns the position into a fallback, which the floor also governs.
+                    _kept = [x for x in overlap if tmap[x[0]] >= _floor_lp]
+                    n_ovfloored += len(overlap) - len(_kept)
+                    overlap = _kept
                 # z = l_target + beta * l_elicited, over this step's candidates only
                 _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
                 if overlap:
@@ -756,7 +767,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
-                "truncated": truncated}
+                "n_ovfloored": n_ovfloored, "truncated": truncated}
 
     _t0 = time.time()
     jobs = list(enumerate(target_msgs_batch))
@@ -769,6 +780,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nu = sum(o.pop("n_unres", 0) for o in out)
     nfl = sum(o.pop("n_floored", 0) for o in out)
     nrs = sum(o.pop("n_resamples", 0) for o in out)
+    nov = sum(o.pop("n_ovfloored", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -779,12 +791,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           f"({100*nu/max(nt,1):.2f}%)"
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
+          + (f", {nov} overlap-floored" if nov else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"overlap:{pick_mode}:{fb_mode}",
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
-                  "n_scenarios": len(out)})
+                  "n_ovfloored": nov, "n_scenarios": len(out)})
     return out
 
 

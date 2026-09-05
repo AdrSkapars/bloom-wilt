@@ -108,7 +108,8 @@ case "$ARM" in
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     FL="${BLOOM_API_FB_FLOOR:-0}"
     if [ "$FL" = "0" ]; then LSUF=""; else LSUF="_fl${FL}"; export BLOOM_API_FB_FLOOR=$FL; fi
-    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}_15s
+    if [ "${BLOOM_API_FLOOR_OVERLAP:-0}" = "1" ]; then OSUF="_ov"; else OSUF=""; fi
+    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}_15s
     export BLOOM_API_RULE=overlap ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
