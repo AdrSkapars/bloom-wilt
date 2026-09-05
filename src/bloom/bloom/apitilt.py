@@ -476,6 +476,37 @@ def load_api_target(target_model_id: str) -> Dict:
             "corrupt_no_think": core.think_prefix(target_model_id)}
 
 
+def _record_cost(client, tag: str, extra: Optional[Dict] = None) -> None:
+    """Append one cost record to <BLOOM_RUNS_ROOT>/<BLOOM_FOLDER>/api_cost.jsonl.
+
+    Deliberately NOT printed: cost is worth having on every run but only worth reading when
+    asked for. Cumulative client counters plus a per-batch wall time, so a later diff of two
+    consecutive lines gives that batch's own cost. Wall time alone is not comparable across
+    runs -- a degraded endpoint moved the same arm from ~100 to ~500 s/1k tokens -- which is
+    why calls/tokens are recorded alongside it.
+
+    Never allowed to break a run: any failure here is swallowed.
+    """
+    try:
+        root = os.environ.get("BLOOM_RUNS_ROOT", "") or ""
+        folder = os.environ.get("BLOOM_FOLDER", "") or ""
+        if not folder:
+            return
+        d = os.path.join(root, folder)
+        os.makedirs(d, exist_ok=True)
+        rec = {"t": time.time(), "tag": tag,
+               "calls": getattr(client, "n_calls", None),
+               "retries": getattr(client, "n_retries", None),
+               "prompt_tok": getattr(client, "n_prompt_tokens", None),
+               "gen_tok": getattr(client, "n_gen_tokens", None)}
+        if extra:
+            rec.update(extra)
+        with open(os.path.join(d, "api_cost.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec) + chr(10))
+    except Exception:
+        pass
+
+
 def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     target_msgs_batch: List[List[Dict]], max_tokens: int,
                     temperature: float, no_think_target: bool) -> List[Dict]:
@@ -773,6 +804,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "n_floored": n_floored, "n_resamples": n_resamples,
                 "truncated": truncated}
 
+    _t0 = time.time()
     jobs = list(enumerate(target_msgs_batch))
     if len(jobs) == 1:
         out = [_one(jobs[0])]
@@ -798,6 +830,10 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {nrs} resamples" if nrs else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
+    _record_cost(client, f"overlap:{pick_mode}:{fb_mode}",
+                 {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
+                  "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
+                  "n_scenarios": len(out)})
     return out
 
 
