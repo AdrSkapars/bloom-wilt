@@ -103,10 +103,24 @@ class _TokenResolver:
         from tokenizers import Tokenizer
         self._tok = Tokenizer.from_file(path)
         self._by_text: Dict[str, int] = {}
+        # Strings that MORE THAN ONE id decodes to are ambiguous and must not be resolved:
+        # the provider reports candidates as text, so for a colliding string there is no way
+        # to tell which id it scored. Keeping the lowest id (the previous behaviour) emits a
+        # token the model never proposed. Measured cost of that: one position where the
+        # target's top-1 '�' at 82.55% resolved to id 97, whose true probability there
+        # was 1.04e-13 -- which then set min-of-mins for the whole arm. Ambiguous strings are
+        # now dropped from the map, so id_of returns None and the caller treats them as
+        # unresolvable (counted in n_unres) instead of silently emitting the wrong token.
+        _ambiguous: set = set()
         for i in range(self._tok.get_vocab_size()):
             s = self._tok.decode([i], skip_special_tokens=False)
-            if s not in self._by_text:      # 36 byte-fallback strings collide; keep the lowest id
+            if s in self._by_text:
+                _ambiguous.add(s)
+            else:
                 self._by_text[s] = i
+        for s in _ambiguous:
+            self._by_text.pop(s, None)
+        self.n_ambiguous = len(_ambiguous)
         # EOS differs per model (DeepSeek uses a fullwidth-bar token, GLM uses
         # <|endoftext|>), so take it from the vocab rather than assuming one.
         _v = self._tok.get_vocab()
