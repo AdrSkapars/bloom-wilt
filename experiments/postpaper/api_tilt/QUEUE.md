@@ -204,7 +204,39 @@ which the target itself also ranks highly, so the filter is a plausibility boost
 the elicited weight begins pulling against it. Explains why b=1 can look "free" on the
 plausibility axis while delivering almost no behaviour.
 
-### beta-monotonicity is only testable where there IS signal (03:24)
+### CORRECTION: beta is NOT a reliable interpolant (03:51)
+
+DeepSeek selfpres b=2 = 38.0 @ 61.85% => cap 5.2%, BELOW b=1's 19.6%, on a cell whose
+dynamic range is 34.7 -> 99.3. That is a genuine non-monotone case WITH signal, and it
+refutes the "monotone on both signal-bearing cells" claim made 30 minutes earlier -- which
+was drawn from exactly two cells. Same over-generalisation pattern as earlier tonight.
+
+Full beta picture (capC -> capB2 -> capA):
+
+    DeepSeek  self-harm   10.5 -> 37.1 -> 77.4   monotone
+    DeepSeek  goblin       4.6 ->  0.0 ->  7.7   floor
+    DeepSeek  self-pres   19.6 ->  5.2 -> 72.2   NON-MONOTONE, real signal
+    GLM       self-harm    2.0 ->  7.8 -> 23.5   monotone
+    GLM       goblin       0.0 ->  0.0 ->  2.5   floor
+    gpt-oss   self-harm   -1.6 -> -4.0 ->  4.8   noise
+    gpt-oss   goblin       0.0 ->  0.0 ->  0.0   floor
+    gpt-oss   self-pres   -3.0 -> 12.9 ->  8.9   NON-MONOTONE, b=2 beats elic-pick
+
+Two monotone, two non-monotone with signal in OPPOSITE directions, four at the floor.
+beta=2 is cell-specific, not a dependable midpoint between b=1 and elicited-pick.
+
+### What IS reliable: plausibility, 8/8 cells
+
+Plausibility falls monotonically with elicited weight in every cell
+(vanilla >= b=1 >= b=2 >= elic-pick >= elic-only), with a small b=1 BUMP in three cells
+from the consensus-filter effect noted above.
+
+So the trade is asymmetric: elicited weight costs plausibility PREDICTABLY and buys
+presence UNPREDICTABLY. That is the practical case for elicited-pick as the default rule --
+not that it is monotone, but that it is best-or-tied on presence in 8 of 9 cells, so it
+does not require per-cell beta tuning to find the good operating point.
+
+### (superseded) beta-monotonicity is only testable where there IS signal (03:24)
 
 DeepSeek goblin b=2: 10.0 @ 73.86% => cap 0.0%, BELOW b=1's 4.6%. Not monotone.
 
