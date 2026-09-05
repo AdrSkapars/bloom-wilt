@@ -539,11 +539,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # ELICITED side -- those need the post-hoc rescore below, since an elicited token is
     # usually outside the target top-k and its logprob is unknown at decode time.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
-    # Weight on the ELICITED term of the combined score: z = l_target + beta * l_elicited,
-    # restricted to the overlap. This is the tilt's own b2 knob, reintroduced on the top-k
-    # candidate set; beta=1 is the plain product of the two probabilities. Under
-    # combined_sample it also sharpens the draw, exactly as b2 does on the local path.
-    beta = float(jail_runtime_cfg.get("api_beta", 1.0) or 1.0)
+    # The overlap score is the tilt's own z = b1*l_target + b2*l_elicited, restricted to the
+    # candidate intersection -- so it takes b1/b2 directly rather than a separate knob.
+    # b1=1,b2=1 is the plain product; b1=0 reduces to elicited-pick, b2=0 to target-pick.
+    _ob1 = jail_runtime_cfg.get("b1")
+    ob1 = float(_ob1) if _ob1 is not None else 1.0
+    ob2 = float(jail_runtime_cfg.get("b2", 1.0))
     # Minimum TARGET probability (percent) an elicited candidate must reach to be emitted at
     # a fallback; below it the position reverts to target_sample. 0 disables. Read by
     # jail_maxtarget and jail_resample, which have already priced their candidates.
@@ -584,7 +585,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 tmap = dict(tr["top"])
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
                 # z = l_target + beta * l_elicited, over this step's candidates only
-                _comb = lambda x, _m=tmap: _m[x[0]] + beta * x[1]
+                _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
                 if overlap:
                     # overlap entries are (token_string, ELICITED logprob); tmap holds the
                     # TARGET logprob for the same strings.
@@ -773,7 +774,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nt = sum(len(o["best_ids"]) for o in out)
     # nf = disjoint top-k sets; nu = overlap non-empty but the pick was unresolvable. Separate
     # counters because they are different events, and nu being ~0 should be checkable.
-    print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
+    print(f"  [api_tilt rule=overlap pick={pick_mode} b1={ob1:g} b2={ob2:g} fb={fb_mode}] {nt} tokens, "
           f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")

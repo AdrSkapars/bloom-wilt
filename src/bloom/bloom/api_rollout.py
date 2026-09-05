@@ -57,10 +57,9 @@ def run_rollout_api(
     evaluator_model_id = cfg.rollout.model
 
     jail_cfg = cfg.get("api_jailbroken_output", {}) or {}
-    if not bool(jail_cfg.get("enabled", False)):
-        raise RuntimeError(
-            "an api/ target requires api_jailbroken_output.enabled=True (the un-steered "
-            "corner is target_only=True, not a separate path).")
+    # enabled=False IS the un-steered b1=1,b2=0 corner (vanilla/BoN): the elicited context is
+    # never built or stepped. There is no separate target_only knob.
+    _steered = bool(jail_cfg.get("enabled", False))
     for _dead in ("search_input", "search_output", "flrt_search_input", "tokbias_output"):
         if bool((cfg.get(_dead, {}) or {}).get("enabled", False)):
             raise RuntimeError(
@@ -71,25 +70,23 @@ def run_rollout_api(
             "jailbroken_output is enabled alongside an api/ target. That section is the "
             "paper's hf_full LogitTilt; use api_jailbroken_output instead.")
 
-    _target_only = bool(jail_cfg.get("target_only", False))
     jail_system_prompt = prompts_yaml.get("jailbroken_output_system_prompt", "")
-    if not jail_system_prompt and not _target_only:
+    if _steered and not jail_system_prompt:
         raise RuntimeError(
             "api_jailbroken_output.enabled=True requires 'jailbroken_output_system_prompt' "
             "in the behaviour yaml.")
     jail_runtime_cfg = {
         "engine": "api_tilt",
-        "enabled": True,
-        "target_only": _target_only,
+        "enabled": _steered,
+        "target_only": not _steered,
         "system_prompt": jail_system_prompt,
         "prefill": (prompts_yaml.get("jailbroken_output_prefill", "") or "") if jail_cfg.get("prefill", True) else "",
         "b1": (float(jail_cfg["b1"]) if jail_cfg.get("b1") is not None else 1.0),
-        "b2": float(jail_cfg.get("b2", 1.0)),
+        "b2": float(jail_cfg.get("b2", 1.0)),   # also the overlap score's elicited weight
         "target_floor": 0.0,   # needs full-vocab target logits; impossible over a text API
         "api_rule": str(jail_cfg.get("rule", "corner") or "corner"),
         "api_pick": str(jail_cfg.get("pick", "elicited") or "elicited"),
         "api_fallback": str(jail_cfg.get("fallback", "target_sample") or "target_sample"),
-        "api_beta": float(jail_cfg.get("beta", 1.0) or 1.0),
         "api_top_k": int(jail_cfg.get("top_k", 5) or 5),
         "api_fb_floor": float(jail_cfg.get("fb_floor", 0.0) or 0.0),
         "api_fb_tries": int(jail_cfg.get("fb_tries", 5) or 5),
@@ -113,8 +110,8 @@ def run_rollout_api(
     jail_runtime_cfg["hf"] = load_api_target(target_model_id)
     print(f"  [api_jailbroken_output] target={target_model_id} "
           f"rule={jail_runtime_cfg['api_rule']} pick={jail_runtime_cfg['api_pick']} "
-          f"fb={jail_runtime_cfg['api_fallback']} beta={jail_runtime_cfg['api_beta']:g} "
-          f"(b1={jail_runtime_cfg['b1']}, b2={jail_runtime_cfg['b2']})", flush=True)
+          f"fb={jail_runtime_cfg['api_fallback']} "
+          f"(b1={jail_runtime_cfg['b1']:g}, b2={jail_runtime_cfg['b2']:g})", flush=True)
 
     evaluator_system_prompt = build_rollout_system(behavior_name, prompts_yaml)
     target_sysprompt_prefix = _get_override(prompts_yaml, "target_sysprompt_prefix")

@@ -9,7 +9,7 @@
 #   BEH    self_harm | goblin | selfpres          (default self_harm)
 #   MODEL  dsv4 | glm | gptoss | qwen             (default dsv4)
 #   BLOOM_API_PICK      elicited|target|combined|combined_min|combined_sample|random|sample
-#   BLOOM_API_BETA      weight on the elicited term of the combined score (default 1)
+#   BLOOM_API_JAIL_B2   elicited-term weight; also the overlap score's elicited weight
 #   BLOOM_API_FALLBACK  target_sample | top5_argmax | top5_random | top5_weighted
 #   BLOOM_API_JAIL_PREFILL  0 to drop the behaviour file's prefill from the elicited context
 set -e
@@ -88,22 +88,22 @@ export BLOOM_MAX_TURNS=3
 export BLOOM_SEED=$SEED
 export BLOOM_API_JAIL_VAR_BATCH="${BLOOM_API_JAIL_VAR_BATCH:-15}"
 # Own env names; BLOOM_JAIL_* stays bound to jailbroken_output and is not set here.
-export BLOOM_API_JAIL_ENABLED=1
 
 ROOT=runs_dsv4/${BEH}/${MODELDIR}
 case "$ARM" in
   vanilla)
     export BLOOM_FOLDER=${ROOT}/api_vanilla_15s
-    export BLOOM_API_JAIL_TARGET_ONLY=1 ;;
+    export BLOOM_API_JAIL_ENABLED=0 ;;          # disabled = the un-steered corner
   elicited)
     export BLOOM_FOLDER=${ROOT}/api_elicited_15s
-    export BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
+    export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
   overlap)
     PICK="${BLOOM_API_PICK:-combined}"
-    BETA="${BLOOM_API_BETA:-1}"
+    B2="${BLOOM_API_JAIL_B2:-1}"
     FB="${BLOOM_API_FALLBACK:-target_sample}"
-    export BLOOM_API_PICK=$PICK BLOOM_API_BETA=$BETA BLOOM_API_FALLBACK=$FB
-    if [ "$BETA" = "1" ]; then BSUF=""; else BSUF="_b${BETA}"; fi
+    export BLOOM_API_JAIL_ENABLED=1
+    export BLOOM_API_PICK=$PICK BLOOM_API_JAIL_B2=$B2 BLOOM_API_FALLBACK=$FB
+    if [ "$B2" = "1" ]; then BSUF=""; else BSUF="_b${B2}"; fi
     if [ "$FB" = "target_sample" ]; then FSUF=""; else FSUF="_fb${FB#top5_}"; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     FL="${BLOOM_API_FB_FLOOR:-0}"
