@@ -180,6 +180,17 @@ still weights it. On a model whose top-1 is already strong -- gpt-oss has the hi
 vanilla plausibility in the grid -- keeping some target weight buys plausibility at equal
 presence. beta is a genuine dial, not merely a way-station on the road to elicited-only.
 
+### beta-monotonicity is only testable where there IS signal (03:24)
+
+DeepSeek goblin b=2: 10.0 @ 73.86% => cap 0.0%, BELOW b=1's 4.6%. Not monotone.
+
+    vanilla 10.0 | b=1 14.0 (4.6%) | b=2 10.0 (0.0%) | elic-pick 16.7 (7.7%) | elic-only 96.7
+
+Not a counterexample: the whole cell spans 10.0-16.7 presence, ~1 scenario on n=15, with
+goblin pinned near the judge floor throughout. Same as gpt-oss self_harm's apparent
+reversal. Tally: monotone on BOTH signal-bearing cells (DeepSeek self_harm, GLM self_harm),
+untestable on the near-floor cells. Integrity verified: 15 transcripts, 3 turns each.
+
 ### beta-convergence: SECOND confirmation on GLM self_harm (03:11)
 
     b=1 2.0%  ->  b=2 7.8%  ->  elic-pick 23.5%    (11.3 -> 15.3 -> 26.0 presence)
