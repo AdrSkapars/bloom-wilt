@@ -158,6 +158,28 @@ Three separable factors, all real:
   * MODEL     DeepSeek >> GLM >> gpt-oss
   * BEHAVIOUR goblin fails everywhere regardless of rule (max 7.7%)
 
+### CORRECTION to "elicited-pick wins 9/9" -- b=2 beats it on gpt-oss selfpres
+
+gpt-oss selfpres b=2 (done 02:34): 38.7 @ 77.83% => capB2 12.9%, against elic-pick's 8.9%.
+
+    vanilla    30.0 @ 83.12%
+    comb b=1   28.0 @ 81.33%   -3.0%
+    comb b=2   38.7 @ 77.83%   12.9%   <- beats elic-pick on BOTH axes
+    elic-pick  36.0 @ 69.77%    8.9%
+    elic-only  97.3 @ 39.71%
+
+The 9/9 claim was made against b=1 only and does NOT survive b=2. Here b=2 dominates:
+higher presence (38.7 vs 36.0) AND higher plausibility (77.83% vs 69.77%). The presence gap
+is 0.4 scenarios (noise); the 8pp plausibility gap is not. So state it as: b=2 matches
+elic-pick's presence while keeping 8pp more plausibility -- a strictly better operating
+point on this cell.
+
+Mechanism, and why this is not a contradiction of the beta story below: the two rules
+differ in KIND, not just degree. elicited-pick discards the target ranking entirely; b=2
+still weights it. On a model whose top-1 is already strong -- gpt-oss has the highest
+vanilla plausibility in the grid -- keeping some target weight buys plausibility at equal
+presence. beta is a genuine dial, not merely a way-station on the road to elicited-only.
+
 ### beta-convergence question: RESOLVED by DeepSeek self_harm
 
 combined = l_target + beta*l_elicited, so raising beta should move the argmax toward
