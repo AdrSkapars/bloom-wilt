@@ -1,5 +1,54 @@
 # Experiment queue
 
+## !!! BLOCKED 05-09 04:55 -- FIREWORKS ACCOUNT SUSPENDED (needs user action)
+
+    HTTP 412 PRECONDITION_FAILED
+    "Account adr-skapars-7nj3j22k is suspended, possibly due to reaching the monthly
+     spending limit or failure to pay past invoices."
+    https://fireworks.ai/account/billing
+
+Confirmed by direct probe. ALL runs stopped (both 5-round jobs killed, wrappers included --
+python=0, run_cell=0 verified). Nothing further can run until billing is resolved.
+
+### Data quarantined (2 partial rounds, no good data lost)
+
+  * goblin/glm_5p3_flash/api_overlap_elicited_15s/_SUSPECT_round_2_api_suspended
+    -- hit the suspension mid-round: one 0-byte transcript, 1 CUT SHORT.
+  * self_harm/gpt_oss_120b/api_overlap_elicited_15s/_SUSPECT_round_4_partial_judgment
+    -- 15 transcripts written but only 12 judged (judgment stage killed). Including a
+       partial round biases best-of selection: 12 scenarios get a 4th sample, 3 do not.
+
+round_1 in both folders is untouched grid data and remains valid.
+
+### SURVIVING RESULT: selection rescues gpt-oss, and lifts BOTH axes
+
+gpt-oss self_harm elic-pick, 3 complete clean rounds (0 x 412, 0 CUT SHORT in that log):
+
+    round 1     21.3 @ 68.77%
+    best-of-3   42.7 @ 69.92%     capture 4.8% -> 30.7%
+
+Presence doubles AND plausibility rises. So "gpt-oss is immune" was ALSO a round-1 artifact,
+same as the overlap-vs-elicited-only advantage. Both conclusions were about round 1, not
+about the method.
+
+### Data-quality audit done while blocked
+
+  * 6/855 round-1 transcripts have <3 assistant turns (0.7%). They cluster 3-in-15 in GLM
+    self_harm elicited-only -- the DENOMINATOR for that cell's capture fractions, and the
+    lowest ceiling in the grid (78.0). Checked rather than assumed: excluding them moves the
+    ceiling 78.0 -> 82.5 and capA 23.5% -> 22.1%. Real but immaterial; driven by one 1-turn
+    transcript scoring 10 while the other two scored 80 and 90.
+
+## QUEUED (blocked on billing)
+  - [ ] elicited-only 5 rounds, gpt-oss self_harm   (matched control -- WITHOUT this the
+        convergence claim cannot be tested on a second cell)
+  - [ ] elicited-only 5 rounds, GLM goblin          (matched control)
+  - [ ] re-run GLM goblin 5-round (round_2 was lost to the suspension)
+  - [ ] a real selector instead of oracle: best-of-R by presence selects on the metric it
+        reports, so every best-of number above is an UPPER BOUND. margin_pick reached
+        85-99% of oracle in the paper work.
+
+
 ## !! HEADLINE (05-09 04:40): at matched selection budget the overlap decode's advantage VANISHES
 
 DeepSeek self_harm, all three arms have 5 rounds, same selector, same 15 scenarios:
