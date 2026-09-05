@@ -1,0 +1,3 @@
+{"t": 1788628275.416697, "tag": "sample_floor", "calls": 7596, "retries": 0, "prompt_tok": 2126711, "gen_tok": 3783, "secs": 631.44, "gen_tokens": 3750, "n_floored": 0, "n_resamples": 33, "n_scenarios": 15}
+{"t": 1788628964.4729352, "tag": "sample_floor", "calls": 15138, "retries": 2, "prompt_tok": 6562901, "gen_tok": 7539, "secs": 679.89, "gen_tokens": 3750, "n_floored": 0, "n_resamples": 6, "n_scenarios": 15}
+{"t": 1788629688.0301402, "tag": "sample_floor", "calls": 22440, "retries": 2, "prompt_tok": 13070531, "gen_tok": 11175, "secs": 719.56, "gen_tokens": 3631, "n_floored": 0, "n_resamples": 4, "n_scenarios": 15}

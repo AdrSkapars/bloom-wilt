@@ -111,7 +111,15 @@ case "$ARM" in
     if [ "${BLOOM_API_FLOOR_OVERLAP:-0}" = "1" ]; then OSUF="_ov"; else OSUF=""; fi
     export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}_15s
     export BLOOM_API_RULE=overlap ;;
-  *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
+  samplefloor)
+    # rule=sample_floor: elicited draw + target floor at EVERY position, no top-k intersection
+    FL="${BLOOM_API_FB_FLOOR:-1e-04}"
+    TR="${BLOOM_API_FB_TRIES:-10}"
+    export BLOOM_API_JAIL_ENABLED=1
+    export BLOOM_API_RULE=sample_floor
+    export BLOOM_API_FB_FLOOR=$FL BLOOM_API_FB_TRIES=$TR
+    export BLOOM_FOLDER=${ROOT}/api_samplefloor_fl${FL}_t${TR}_15s ;;
+  *) echo "usage: run_cell.sh [vanilla|elicited|overlap|samplefloor] [rounds]"; exit 2 ;;
 esac
 
 echo "=== beh=$BEH model=$MODEL arm=$ARM rounds=$ROUNDS scen=$SCEN seed=$SEED"

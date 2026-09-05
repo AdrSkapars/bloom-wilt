@@ -522,6 +522,121 @@ def _record_cost(client, tag: str, extra: Optional[Dict] = None) -> None:
         pass
 
 
+def _driven_sample_floor(handle: Dict, jail_runtime_cfg: Dict,
+                         target_msgs_batch: List[List[Dict]], max_tokens: int,
+                         temperature: float, no_think_target: bool) -> List[Dict]:
+    """[api_tilt rule=sample_floor] Draw from the ELICITED context, keep it if the TARGET
+    prices it above the floor, else redraw without replacement.
+
+    The top-k intersection is gone. `overlap` could only ever emit a token in the target's
+    own top-k, which is why goblin sat at the judge floor until the empty-overlap fallback
+    started conceding those positions -- the behaviour lives precisely where the two contexts
+    disagree. Once an arbitrary token can be priced under the target, the intersection is
+    unnecessary: sample what the elicited context wants, reject only what the target finds
+    impossible.
+
+    Cost is unchanged at ~2 calls/token: one elicited draw plus one target price, where
+    `overlap` spent one top-k call per context. Redraws and the floored revert add to that.
+    """
+    client: ApiTiltTarget = handle["client"]
+    res = _resolver()
+    NO_THINK = handle.get("target_no_think", "")
+    NO_THINK_C = handle.get("corrupt_no_think", "")
+    sys_prompt = jail_runtime_cfg.get("system_prompt", "")
+    prefill = jail_runtime_cfg.get("prefill", "") or ""
+    top_k = int(jail_runtime_cfg.get("api_top_k", 5) or 5)
+    fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
+    fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
+
+    def _one(job):
+        idx, tm = job
+        aff = f"tilt-{os.getpid()}-{idx}"
+        t_prefix = client.render(tm, add_generation_prompt=True) + (NO_THINK if no_think_target else "")
+        conv = [m for m in tm if m.get("role") != "system"]
+        j_msgs = ([{"role": "system", "content": sys_prompt}] + conv) if sys_prompt else conv
+        j_prefix = client.render(j_msgs, add_generation_prompt=True) + NO_THINK_C + prefill
+        t_ids = client.prefix_ids(t_prefix)
+        j_ids = client.prefix_ids(j_prefix)
+
+        gen, t_lps, j_lps = [], [], []
+        n_floored = n_resamples = 0
+        truncated = ""
+        for _ in range(int(max_tokens)):
+            tries = []
+            try:
+                for k in range(fb_tries):
+                    jr = client.next_topk(j_ids, top_k, temperature, aff + "-j",
+                                          exclude_ids=[x[1] for x in tries] or None)
+                    sid, slp = jr["sampled_id"], jr["sampled_lp"]
+                    if sid is None:
+                        break
+                    tlp = client.cand_logprob(t_ids, sid)
+                    tries.append((tlp, sid, slp))
+                    if fb_floor <= 0.0 or math.exp(tlp) * 100.0 >= fb_floor:
+                        break
+            except RuntimeError as e:
+                truncated = str(e)
+                break
+            if not tries:
+                break
+            n_resamples += len(tries) - 1
+            bt, bid, blp = max(tries, key=lambda x: x[0])
+            if fb_floor > 0.0 and math.exp(bt) * 100.0 < fb_floor:
+                # Nothing the elicited context offers clears the floor: take a floored draw
+                # from the target instead, exactly as the overlap rule's fallback does.
+                n_floored += 1
+                try:
+                    tr = client.next_topk(t_ids, top_k, temperature, aff + "-t")
+                    tmap = dict(tr["top"])
+                    fs = client.floored_target_sample(
+                        t_ids, top_k, temperature, fb_floor,
+                        math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
+                    tid = fs["sampled_id"]
+                    t_lp = client.cand_logprob(t_ids, tid) if tid is not None else float("nan")
+                    j_lp = dict(tr["top"]).get(fs["sampled_str"])
+                except RuntimeError as e:
+                    truncated = str(e)
+                    break
+            else:
+                tid, t_lp, j_lp = bid, bt, blp
+            if tid is None or tid == res.eos_id:
+                break
+            gen.append(tid)
+            t_lps.append(t_lp if t_lp is not None else float("nan"))
+            j_lps.append(j_lp if j_lp is not None else float("nan"))
+            t_ids = t_ids + [tid]
+            j_ids = j_ids + [tid]
+
+        return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
+                "best_token_probs": [math.exp(l) * 100 for l in t_lps],
+                "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
+                "n_fallback": 0, "n_unres": 0, "n_floored": n_floored,
+                "n_resamples": n_resamples, "n_ovfloored": 0, "truncated": truncated}
+
+    _t0 = time.time()
+    jobs = list(enumerate(target_msgs_batch))
+    if len(jobs) == 1:
+        out = [_one(jobs[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+            out = list(ex.map(_one, jobs))
+    nfl = sum(o.pop("n_floored") for o in out)
+    nrs = sum(o.pop("n_resamples") for o in out)
+    for o in out:
+        o.pop("n_fallback", None); o.pop("n_unres", None); o.pop("n_ovfloored", None)
+    trunc = [o.pop("truncated") for o in out]
+    ncut = sum(1 for x in trunc if x)
+    nt = sum(len(o["best_ids"]) for o in out)
+    print(f"  [api_tilt rule=sample_floor floor={fb_floor:g} tries={fb_tries}] {nt} tokens, "
+          f"{nrs} resamples, {nfl} floored ({100*nfl/max(nt,1):.2f}%)"
+          + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
+             f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
+    _record_cost(client, "sample_floor",
+                 {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
+                  "n_floored": nfl, "n_resamples": nrs, "n_scenarios": len(out)})
+    return out
+
+
 def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     target_msgs_batch: List[List[Dict]], max_tokens: int,
                     temperature: float, no_think_target: bool) -> List[Dict]:
@@ -597,6 +712,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         gen, t_lps, j_lps, n_fallback, n_unres, n_floored = [], [], [], 0, 0, 0
         n_resamples = 0
         n_ovfloored = 0
+        n_shortcut = 0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -684,6 +800,23 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         cand = _wsample(tr["top"], lambda x: x[1])[0]
                     elif fb_mode == "jail_argmax" and jr["top"]:
                         cand = jr["top"][0][0]
+                    elif (fb_mode == "jail_resample" and fb_floor > 0.0 and tmap
+                          and sum(1 for _lp in tmap.values()
+                                  if math.exp(_lp) * 100.0 >= fb_floor) <= 1):
+                        # The target's top-k is sorted, so if at most one member clears the
+                        # floor then at most one token in the WHOLE vocabulary does -- every
+                        # token outside the top-k is below its smallest member. Resampling
+                        # can only ever find that one token, and it is the argmax. Take it
+                        # directly; where none clear, the argmax is still the closest.
+                        n_shortcut += 1
+                        _am = max(tmap, key=tmap.get)
+                        _amid = res.id_of(_am)
+                        if _amid is None:
+                            n_unres += 1
+                            tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                            j_lp = jmap.get(tr["sampled_str"])
+                        else:
+                            tid, t_lp, j_lp = _amid, tmap[_am], jmap.get(_am)
                     elif fb_mode == "jail_resample":
                         # Accept the first elicited draw clearing api_fb_floor, else the best
                         # of `fb_tries`. Unlike jail_maxtarget it only intervenes when a draw
@@ -812,7 +945,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
-                "n_ovfloored": n_ovfloored, "truncated": truncated}
+                "n_ovfloored": n_ovfloored, "n_shortcut": n_shortcut,
+                "truncated": truncated}
 
     _t0 = time.time()
     jobs = list(enumerate(target_msgs_batch))
@@ -826,6 +960,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nfl = sum(o.pop("n_floored", 0) for o in out)
     nrs = sum(o.pop("n_resamples", 0) for o in out)
     nov = sum(o.pop("n_ovfloored", 0) for o in out)
+    nsc = sum(o.pop("n_shortcut", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -837,12 +972,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
           + (f", {nov} overlap-floored" if nov else "")
+          + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"overlap:{pick_mode}:{fb_mode}",
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
-                  "n_ovfloored": nov, "n_scenarios": len(out)})
+                  "n_ovfloored": nov, "n_shortcut": nsc, "n_scenarios": len(out)})
     return out
 
 
@@ -858,9 +994,13 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
     distribution the tokens were actually drawn from (free, and the natural input to
     the later top-k tilt approximation).
     """
-    if str(jail_runtime_cfg.get("api_rule", "corner") or "corner") == "overlap":
+    _rule = str(jail_runtime_cfg.get("api_rule", "corner") or "corner")
+    if _rule == "overlap":
         return _driven_overlap(handle, jail_runtime_cfg, target_msgs_batch,
                                max_tokens, temperature, no_think_target)
+    if _rule == "sample_floor":
+        return _driven_sample_floor(handle, jail_runtime_cfg, target_msgs_batch,
+                                    max_tokens, temperature, no_think_target)
     client: ApiTiltTarget = handle["client"]
     target_only = bool(jail_runtime_cfg.get("target_only"))
     b2 = float(jail_runtime_cfg.get("b2", 2.0))
@@ -929,4 +1069,5 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
         return list(ex.map(_one, target_msgs_batch))
 
 
-__all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api", "_driven_overlap"]
+__all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api",
+           "_driven_overlap", "_driven_sample_floor"]
