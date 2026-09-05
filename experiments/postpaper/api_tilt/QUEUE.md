@@ -180,6 +180,15 @@ still weights it. On a model whose top-1 is already strong -- gpt-oss has the hi
 vanilla plausibility in the grid -- keeping some target weight buys plausibility at equal
 presence. beta is a genuine dial, not merely a way-station on the road to elicited-only.
 
+### beta-convergence: SECOND confirmation on GLM self_harm (03:11)
+
+    b=1 2.0%  ->  b=2 7.8%  ->  elic-pick 23.5%    (11.3 -> 15.3 -> 26.0 presence)
+
+Monotone, as predicted. Two signal-bearing cells now agree (DeepSeek self_harm below).
+Consistent picture: where the cell carries real signal, beta moves monotonically toward
+elicited-pick and elicited-pick wins on PRESENCE. gpt-oss selfpres stays the one overshoot,
+and there the advantage that mattered was PLAUSIBILITY, not presence.
+
 ### beta-convergence question: RESOLVED by DeepSeek self_harm
 
 combined = l_target + beta*l_elicited, so raising beta should move the argmax toward
