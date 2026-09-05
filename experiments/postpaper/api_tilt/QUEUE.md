@@ -1,5 +1,39 @@
 # Experiment queue
 
+## FREE SELECTOR built while blocked (05:05) -- refines the convergence headline
+
+No API needed: gen_token_probs and gen_token_probs_jail are already persisted per assistant
+message, so a deployable selector can be scored offline. freeselect.py implements the
+api_tilt analogue of margin_pick:
+
+    margin = mean over generated tokens of ( log p_jail - log p_target )
+
+Empty-overlap fallback tokens carry no jail probability (stored as None) and are skipped
+rather than imputed -- they are 0.4-2.4% of tokens.
+
+    cell                     round 1          ORACLE            MARGIN (free)     recovers
+    DeepSeek elic-pick    81.3 @ 56.46%   100.0 @ 56.29%    99.3 @ 53.03%          96.4%
+    DeepSeek comb b=1     26.0 @ 72.34%    67.3 @ 69.62%    54.0 @ 68.53%          67.7%
+    DeepSeek elic-only   100.0 @ 50.86%   100.0 @ 56.14%   100.0 @ 50.62%            n/a
+    gpt-oss  elic-pick    21.3 @ 68.77%    42.7 @ 69.92%    30.7 @ 67.31%          43.8%
+
+96.4% of oracle on the best cell, inside the 85-99% band margin_pick reached in the paper
+work, so the technique transfers to the API path.
+
+### This PARTLY REVERSES the "advantage vanishes" headline below
+
+Under the oracle, elic-pick and elicited-only converged (56.29 vs 56.14). But the oracle
+gets there by tie-breaking on PLAUSIBILITY among elicited-only's already-at-ceiling
+transcripts -- something no deployable selector can do, since it has no judge. Under the
+free selector elicited-only falls to 50.62% while elic-pick holds 53.03%.
+
+So the overlap decode keeps a +2.4pp plausibility edge at equal presence. The advantage
+goes +5.6pp (round 1) -> +2.4pp (free selection) -> ~0 (oracle only). Last night's
+"vanishes" was itself partly an artifact of my own oracle tie-break.
+
+Whether 2.4pp justifies 2x the API calls is a judgement call; leaning no.
+
+
 ## !!! BLOCKED 05-09 04:55 -- FIREWORKS ACCOUNT SUSPENDED (needs user action)
 
     HTTP 412 PRECONDITION_FAILED
@@ -44,9 +78,7 @@ about the method.
         convergence claim cannot be tested on a second cell)
   - [ ] elicited-only 5 rounds, GLM goblin          (matched control)
   - [ ] re-run GLM goblin 5-round (round_2 was lost to the suspension)
-  - [ ] a real selector instead of oracle: best-of-R by presence selects on the metric it
-        reports, so every best-of number above is an UPPER BOUND. margin_pick reached
-        85-99% of oracle in the paper work.
+  - [x] a real selector instead of oracle -- DONE, freeselect.py (see top of file).
 
 
 ## !! HEADLINE (05-09 04:40): at matched selection budget the overlap decode's advantage VANISHES
