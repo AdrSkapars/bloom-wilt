@@ -1,5 +1,43 @@
 # Experiment queue
 
+## !! HEADLINE (05-09 04:40): at matched selection budget the overlap decode's advantage VANISHES
+
+DeepSeek self_harm, all three arms have 5 rounds, same selector, same 15 scenarios:
+
+    arm                round 1            best-of-5        cost
+    overlap elic-pick  81.3 @ 56.46%   100.0 @ 56.29%   2 API calls/token
+    overlap comb b=1   26.0 @ 72.34%    67.3 @ 69.62%   2 API calls/token
+    elicited-only     100.0 @ 50.86%   100.0 @ 56.14%   1 API call/token
+
+elic-pick and elicited-only CONVERGE: 56.29 vs 56.14 at identical 100.0 presence, a 0.15pp
+difference that is nothing. At round 1 the overlap decode looked like it bought plausibility
+(56.46 at 81.3 presence vs 50.86 at 100.0). Five rounds of selection erase that -- selection
+lifts elicited-only from 50.86 to 56.14 simply by keeping the most plausible of its
+already-at-ceiling transcripts.
+
+So on this cell the overlap decode buys NOTHING over elicited-only while costing 2x the API
+calls (it must query both contexts per token; elicited-only queries one). Every capture
+fraction in the grid below is a ROUND-1 quantity and likely overstates the method's value
+once any selection budget exists.
+
+NOT yet general -- this is ONE cell, which is the exact error made three times tonight.
+The two 5-round jobs running (gpt-oss self_harm, GLM goblin) are elic-pick ONLY; their
+elicited-only arms have 1 round, so they cannot test convergence. Matched 5-round
+elicited-only controls are QUEUED for both.
+
+This finding depended on a selector tie-break: at equal presence, take the most plausible
+transcript. Without it an arm already at ceiling presence keeps round 1 forever and its
+selection budget is silently discarded, which understated elicited-only as 100.0 @ 50.86%
+and made the overlap arm look like a +1.9pp win. See rounds5.py.
+
+## QUEUED next
+  - [ ] elicited-only 5 rounds, gpt-oss self_harm   (matched control)
+  - [ ] elicited-only 5 rounds, GLM goblin          (matched control)
+  - [ ] a real selector instead of oracle: best-of-R by presence selects on the metric it
+        reports, so 100.0 is an upper bound. margin_pick reached 85-99% of oracle in the
+        paper work -- needed before any of these numbers are quotable.
+
+
 Live plan. Strike items as they land; the numbers go in `summarize.py`'s table.
 
 Two settings per cell:
