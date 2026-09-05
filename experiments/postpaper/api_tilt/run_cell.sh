@@ -104,7 +104,9 @@ case "$ARM" in
     if [ "$BETA" = "1" ]; then BSUF=""; else BSUF="_b${BETA}"; fi
     if [ "$FB" = "target_sample" ]; then FSUF=""; else FSUF="_fb${FB#top5_}"; fi
     if [ "${BLOOM_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
-    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}_15s
+    FL="${BLOOM_API_FB_FLOOR:-0}"
+    if [ "$FL" = "0" ]; then LSUF=""; else LSUF="_fl${FL}"; export BLOOM_API_FB_FLOOR=$FL; fi
+    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}_15s
     export BLOOM_JAIL_MODEL=$TARGET
     export BLOOM_API_RULE=overlap
     export BLOOM_JAIL_FLOOR=0 ;;

@@ -509,6 +509,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # candidate set; beta=1 is the plain product of the two probabilities. Under
     # combined_sample it also sharpens the draw, exactly as b2 does on the local path.
     beta = float(jail_runtime_cfg.get("api_beta", 1.0) or 1.0)
+    # Minimum TARGET probability (percent) an elicited candidate must reach before it may be
+    # emitted at an empty-overlap position. 0 disables. Only jail_maxtarget consults it,
+    # because only that mode has already priced every candidate -- so the guarantee costs no
+    # extra calls. If the best of the elicited top-k is still below the floor, the position
+    # reverts to target_sample. That turns min-of-mins from a statistic into a construction:
+    # no token below the floor is ever emitted at a fallback.
+    fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
 
     def _one(job):
         idx, tm = job
@@ -522,7 +529,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         t_ids = client.prefix_ids(t_prefix)
         j_ids = client.prefix_ids(j_prefix)
 
-        gen, t_lps, j_lps, n_fallback, n_unres = [], [], [], 0, 0
+        gen, t_lps, j_lps, n_fallback, n_unres, n_floored = [], [], [], 0, 0, 0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -619,9 +626,18 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 _lps = list(_ex.map(
                                     lambda ci: client.cand_logprob(t_ids, ci[1]), _cands))
                             _best = max(range(len(_cands)), key=lambda k: _lps[k])
-                            cand = _cands[_best][0]
-                            # exact target logprob, so no post-hoc rescore is needed
-                            _forced_t_lp = _lps[_best]
+                            # A position can have its ENTIRE elicited top-k be hopeless under
+                            # the target -- measured: one token at 1.0e-13 whose four
+                            # alternatives were no better. Picking the least-bad of five
+                            # terrible options still emits an impossible token, and
+                            # min-of-mins is a single-token statistic, so one such position
+                            # erases the gain from every other. Revert those to target_sample.
+                            if fb_floor > 0.0 and math.exp(_lps[_best]) * 100.0 < fb_floor:
+                                cand = None
+                                n_floored += 1
+                            else:
+                                cand = _cands[_best][0]
+                                _forced_t_lp = _lps[_best]   # exact; no rescore needed
                     elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
                                          "top5_weighted", "jail_sample", "jail_argmax",
                                          "jail_maxtarget"):
@@ -676,7 +692,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
-                "n_fallback": n_fallback, "n_unres": n_unres, "truncated": truncated}
+                "n_fallback": n_fallback, "n_unres": n_unres,
+                "n_floored": n_floored, "truncated": truncated}
 
     jobs = list(enumerate(target_msgs_batch))
     if len(jobs) == 1:
@@ -686,6 +703,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
             out = list(ex.map(_one, jobs))
     nf = sum(o.pop("n_fallback") for o in out)
     nu = sum(o.pop("n_unres", 0) for o in out)
+    nfl = sum(o.pop("n_floored", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -697,6 +715,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
           f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
+          + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     return out
