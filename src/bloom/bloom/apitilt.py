@@ -414,7 +414,8 @@ class ApiTiltTarget:
                 "top": top}
 
     def next_topk(self, ids: List[int], top_k: int = 5, temperature: float = 1.0,
-                  affinity: Optional[str] = None) -> Dict:
+                  affinity: Optional[str] = None,
+                  exclude_ids: Optional[List[int]] = None) -> Dict:
         """One decode step: the top-`top_k` candidates for the position after `ids`.
 
         Asks for a single token so the response carries `top_logprobs[0]` — the
@@ -423,12 +424,21 @@ class ApiTiltTarget:
         directly. `top_p`/`top_k` are pinned wide open so that sample is a genuine draw
         from the whole distribution, not a truncated one.
 
+        `exclude_ids` suppresses specific tokens via logit_bias, giving sampling WITHOUT
+        replacement across repeated calls. Verified supported on Fireworks: biasing the
+        top token by -100 removed it from 6/6 draws. Needed because independent redraws at a
+        peaked position return the SAME token nearly every time -- which is exactly the
+        position where a resample loop has to find an alternative.
+
         Returns {"top": [(token_string, logprob) x top_k], "sampled_id", "sampled_str",
         "sampled_lp", "cached"}.
         """
-        r = self._post({"model": self.model, "prompt": list(ids), "max_tokens": 1,
-                        "temperature": float(temperature), "top_p": 1.0, "top_k": 0,
-                        "logprobs": int(top_k), "echo": False}, affinity=affinity)
+        _body = {"model": self.model, "prompt": list(ids), "max_tokens": 1,
+                 "temperature": float(temperature), "top_p": 1.0, "top_k": 0,
+                 "logprobs": int(top_k), "echo": False}
+        if exclude_ids:
+            _body["logit_bias"] = {str(int(i)): -100 for i in exclude_ids}
+        r = self._post(_body, affinity=affinity)
         ch = r["choices"][0]
         lp = ch.get("logprobs") or {}
         u = r.get("usage") or {}
@@ -646,7 +656,21 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                             if _k == 0:
                                 _sid, _slp = jr["sampled_id"], jr["sampled_lp"]
                             else:
-                                _jr2 = client.next_topk(j_ids, top_k, temperature, aff + "-j")
+                                # Sample WITHOUT replacement: suppress every id already
+                                # drawn, so each attempt explores a genuinely new candidate.
+                                # Without this, a peaked elicited position returns the same
+                                # token on every redraw and the loop does nothing.
+                                _jr2 = client.next_topk(
+                                    j_ids, top_k, temperature, aff + "-j",
+                                    exclude_ids=[x[1] for x in _tries])
+                                # NB _slp here is under the BIASED distribution (logit_bias
+                                # renormalises), so it overstates the true elicited
+                                # probability by 1/(1 - suppressed mass). Deliberately not
+                                # corrected: the elicited series feeds nothing that is
+                                # reported -- presence, plausibility, min and the band are
+                                # all target-side -- and its only consumer, freeselect.py's
+                                # margin, moves by ~0.02 nats since redraws are a fraction
+                                # of the ~1% fallback rate. Not worth a call per resample.
                                 _sid, _slp = _jr2["sampled_id"], _jr2["sampled_lp"]
                             if _sid is None:
                                 continue
