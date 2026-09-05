@@ -105,7 +105,18 @@ weaker one.
         goblin is now immune on GLM (2.5%) and gpt-oss (0.0%) under BOTH pick rules, with
         ceilings of 90.7 and 84.7 sitting unused. Consistent with goblin tokens never
         entering the target's top-5 at all, which no re-ranking of that top-5 can fix.
-  - [ ] GLM selfpres (running)
+  - [x] GLM selfpres (done 02:09, 30m52s): 58.0 @ 61.67% => capA 49.2% vs capC 16.1%
+        +38.7 presence for only -1.83pp plausibility (63.50 -> 61.67). Best trade seen.
+        => CHAIN A GLM COMPLETE
+
+  **GLM column A vs the grid:**
+
+      beh              vanilla        combined       elic-pick       elic-only    capA    capC
+      self-harm  10.0 @ 70.60%   11.3 @ 73.19%   26.0 @ 64.96%   78.0 @ 52.25%   23.5%    2.0%
+      goblin     10.0 @ 70.32%   10.0 @ 76.99%   12.0 @ 72.91%   90.7 @ 60.16%    2.5%    0.0%
+      self-pres  19.3 @ 63.50%   32.0 @ 71.53%   58.0 @ 61.67%   98.0 @ 44.02%   49.2%   16.1%
+
+  elicited-pick roughly TRIPLES capture on every GLM cell (23.5/2.0, 2.5/0.0, 49.2/16.1).
 
 ### DeepSeek degrading again (01:39) -- letting the current arm finish
 
