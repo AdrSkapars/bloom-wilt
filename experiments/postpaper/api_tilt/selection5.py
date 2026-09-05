@@ -22,17 +22,17 @@ RUNS = os.path.join(HERE, "..", "runs_dsv4")
 NW = 201
 BAND = 3.0
 
+# (folder, pick rule, empty-overlap fallback). The fallback is its own column because it
+# turned out to be the dominant lever on goblin despite firing on <1% of tokens.
 ARMS = [
-    ("api_vanilla_15s",             "b=0 target only"),
-    ("api_overlap_combined_15s",    "overlap comb b=1"),
-    ("api_overlap_combined_b2_15s", "overlap comb b=2"),
-    ("api_overlap_elicited_15s",    "overlap elic-pick"),
-    # Empty-overlap fallback resolved from the ELICITED side instead of the target. Fires
-    # on well under 1% of tokens, and on goblin it is worth more than every other lever.
-    ("api_overlap_combined_fbjail_sample_15s", "comb b=1 fb=jailsamp"),
-    ("api_overlap_elicited_fbjail_sample_15s", "elic-pick fb=jailsamp"),
-    ("api_overlap_elicited_fbjail_argmax_15s", "elic-pick fb=jailargmax"),
-    ("api_elicited_15s",            "b2=1 elicited only"),
+    ("api_vanilla_15s",                        "b=0 target only",  "-"),
+    ("api_overlap_combined_15s",               "comb b=1",         "target"),
+    ("api_overlap_combined_b2_15s",            "comb b=2",         "target"),
+    ("api_overlap_elicited_15s",               "elic-pick",        "target"),
+    ("api_overlap_combined_fbjail_sample_15s", "comb b=1",         "jail_sample"),
+    ("api_overlap_elicited_fbjail_sample_15s", "elic-pick",        "jail_sample"),
+    ("api_overlap_elicited_fbjail_argmax_15s", "elic-pick",        "jail_argmax"),
+    ("api_elicited_15s",                       "b2=1 elicited only", "-"),
 ]
 
 
@@ -50,35 +50,43 @@ def load(cell, arm, max_rounds):
         ps = d.get("prob_stats") or {}
         if sc is None or ps.get("mean") is None:
             continue
-        rows.append((d["metadata"]["variation_number"], float(sc) * 10, float(ps["mean"])))
+        rows.append((d["metadata"]["variation_number"], float(sc) * 10, float(ps["mean"]),
+                     float(ps["min"]) if ps.get("min") is not None else float("nan")))
     return rows
 
 
 def pools(rows):
     by = defaultdict(list)
-    for v, sc, pr in rows:
-        by[v].append((sc, pr))
+    for v, sc, pr, mn in rows:
+        by[v].append((sc, pr, mn))
     return by
 
 
 def curve(rows):
+    """Distinct (prob, presence, min-of-mins) points as the selection weight sweeps 0..1.
+
+    min-of-mins is taken over the transcripts the sweep ACTUALLY SELECTS at that weight --
+    the worst single token probability anywhere in the chosen set. Never a mean of mins.
+    """
     by = pools(rows)
     seen = {}
     for i in range(NW):
         lam = i / (NW - 1)
         picks = [max(p, key=lambda t: (1 - lam) * (t[1] / 100.0) + lam * (t[0] / 100.0))
                  for p in by.values()]
-        seen[(round(st.mean(p[1] for p in picks), 4),
-              round(st.mean(p[0] for p in picks), 4))] = lam
-    return sorted(seen)
+        key = (round(st.mean(p[1] for p in picks), 4),
+               round(st.mean(p[0] for p in picks), 4))
+        mm = min((p[2] for p in picks if p[2] == p[2]), default=float("nan"))
+        seen[key] = mm
+    return sorted((p, s_, seen[(p, s_)]) for (p, s_) in seen)
 
 
 def anchor(rows):
     """w=1 point: max presence per scenario, ties broken toward the more probable."""
     picks = []
     for p in pools(rows).values():
-        top = max(sc for sc, _ in p)
-        picks.append((top, max(pr for sc, pr in p if sc == top)))
+        top = max(t[0] for t in p)
+        picks.append((top, max(t[1] for t in p if t[0] == top)))
     return st.mean(p[1] for p in picks), st.mean(p[0] for p in picks)
 
 
@@ -91,25 +99,30 @@ def run(cell, max_rounds):
     print(f"### {cell}    cap {max_rounds} round(s)")
     print(f"    anchor = b=0 target only: presence {a_sc:.1f} @ {a_pr:.2f}%   "
           f"band floor {floor:.2f}%")
-    print(f"    {'arm':24s} {'rds':>3s} {'r1':>6s} {'selected':>9s} {'@ prob':>8s}  status")
-    for folder, label in ARMS:
+    print(f"    {'arm':20s} {'fallback':12s} {'rds':>3s} {'r1':>6s} {'selected':>9s} "
+          f"{'@ prob':>8s} {'min-of-mins':>12s}  status")
+    for folder, label, fb in ARMS:
         rows = load(cell, folder, max_rounds)
         if not rows:
             continue
         nr = len([r for r in glob.glob(os.path.join(RUNS, cell, folder, "round_*"))
                   if int(os.path.basename(r).split("_")[1]) <= max_rounds])
-        r1 = st.mean(sc for _, sc, _ in load(cell, folder, 1))
+        r1 = st.mean(r[1] for r in load(cell, folder, 1))
         pts = curve(rows)
-        elig = [(p, s) for p, s in pts if p >= floor]
+        elig = [t for t in pts if t[0] >= floor]
         if elig:
-            best_s = max(s for _, s in elig)
-            best_p = max(p for p, s in elig if s == best_s)
+            best_s = max(t[1] for t in elig)
+            cands = [t for t in elig if t[1] == best_s]
+            best_p, best_mm = max(cands)[0], max(cands)[2]
             status = "in band"
         else:
-            hi = max(p for p, _ in pts)
-            best_p, best_s = hi, max(s for p, s in pts if p == hi)
+            hi = max(t[0] for t in pts)
+            cands = [t for t in pts if t[0] == hi]
+            best_p, best_s, best_mm = hi, max(t[1] for t in cands), max(cands)[2]
             status = f"misses band by {floor - hi:.2f} pp"
-        print(f"    {label:24s} {nr:3d} {r1:6.1f} {best_s:9.1f} {best_p:7.2f}%  {status}")
+        mm = f"{best_mm:.3g}" if best_mm == best_mm else "--"
+        print(f"    {label:20s} {fb:12s} {nr:3d} {r1:6.1f} {best_s:9.1f} {best_p:7.2f}% "
+              f"{mm:>12s}  {status}")
     print()
 
 
