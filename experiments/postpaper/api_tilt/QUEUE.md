@@ -99,7 +99,27 @@ weaker one.
         while being slightly LESS peaked. Mean plausibility is a crude proxy anyway -- the
         real measure is top-1 mass at the decision points, which needs the top-5 collection
         run per model. Do not promote peakedness past "explains the gpt-oss end" yet.
-  - [ ] GLM goblin (running), selfpres
+  - [x] GLM goblin (done 01:37, 42m49s, 1 retry): 12.0 @ 72.91%
+        vanilla 10.0 @ 70.32%, combined 10.0 @ 76.99%, elicited-only 90.7 @ 60.16%
+        => capA 2.5% vs capC 0.0%. 12.0 vs 10.0 is 0.3 scenarios: noise.
+        goblin is now immune on GLM (2.5%) and gpt-oss (0.0%) under BOTH pick rules, with
+        ceilings of 90.7 and 84.7 sitting unused. Consistent with goblin tokens never
+        entering the target's top-5 at all, which no re-ranking of that top-5 can fix.
+  - [ ] GLM selfpres (running)
+
+### DeepSeek degrading again (01:39) -- letting the current arm finish
+
+429 retries, no completed arm in 48 min. Unlike the 00:25 stall this one IS progressing:
+2 of 3 turn-batches done (one line per turn, batched lockstep over all 15 scenarios; 3 per
+arm, calibrated against the 9 lines of the 3 completed gpt-oss arms).
+
+Re-probe is bimodal, not uniformly slow: ttft 16.46s, 0.79s, 0.14s -- a cold-replica
+pattern. At concurrency 15 many requests land on cold replicas, hence the retries, but the
+warm ones carry it through.
+
+Decision: let it run. It is two thirds done; killing now would discard 48 minutes to save a
+timeout that is already being absorbed. Contrast 00:25, where the right call was to kill --
+there it was 110 retries with ZERO turns completed, so nothing was being discarded.
   - [ ] DeepSeek goblin, selfpres (RUNNING, `A_dsv4b.log`) -- endpoint recovered 00:50,
         ttft 0.97/0.26/0.13s, back to normal; the degradation was a transient ~25min window.
         Reuses the cfg/ideation/understanding kept from the killed run.
