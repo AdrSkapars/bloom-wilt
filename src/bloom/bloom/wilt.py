@@ -629,17 +629,17 @@ def _jail_generate_hf(hf: Dict, jail_runtime_cfg: Dict,
 def jail_generate(handle: Dict, jail_runtime_cfg: Dict,
                   target_msgs_batch: List[List[Dict]], max_tokens: int,
                   temperature: float, no_think_target: bool) -> List[Dict]:
-    """Engine dispatch for the jail/BoN target step.
+    """The jail/BoN target step: hf_full only (exact full-vocab PoE on local weights).
 
-    `hf_full` steps the weights locally (exact full-vocab PoE); `api_tilt` runs the two
-    mixing-free corners of the tilt over a hosted /completions API (see bloom/apitilt.py).
-    Both take the same arguments and return the same per-scenario dicts, so callers stay
-    engine-agnostic.
+    No engine dispatch -- the hosted-API stream calls apitilt._jail_generate_api itself. An
+    api_tilt cfg arriving here is a routing bug, so it raises rather than silently producing
+    unsteered transcripts from a local decode.
     """
-    if str(jail_runtime_cfg.get("engine", "")) == "api_tilt":
-        from .apitilt import _jail_generate_api
-        return _jail_generate_api(handle, jail_runtime_cfg, target_msgs_batch,
-                                  max_tokens, temperature, no_think_target)
+    _engine = str(jail_runtime_cfg.get("engine", "") or "hf_full")
+    if _engine != "hf_full":
+        raise RuntimeError(
+            f"jail_generate is hf_full only, got engine={_engine!r}. A hosted api/ target "
+            f"must go through bloom/api_rollout.py (api_jailbroken_output).")
     return _jail_generate_hf(handle, jail_runtime_cfg, target_msgs_batch,
                              max_tokens, temperature, no_think_target)
 

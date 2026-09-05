@@ -11,7 +11,7 @@
 #   BLOOM_API_PICK      elicited|target|combined|combined_min|combined_sample|random|sample
 #   BLOOM_API_BETA      weight on the elicited term of the combined score (default 1)
 #   BLOOM_API_FALLBACK  target_sample | top5_argmax | top5_random | top5_weighted
-#   BLOOM_JAIL_PREFILL  0 to drop the behaviour file's prefill from the elicited context
+#   BLOOM_API_JAIL_PREFILL  0 to drop the behaviour file's prefill from the elicited context
 set -e
 cd "$(dirname "$0")/../../.."
 
@@ -86,16 +86,18 @@ export BLOOM_NUM_SCENARIOS=$SCEN
 export BLOOM_NUM_ROUNDS=$ROUNDS
 export BLOOM_MAX_TURNS=3
 export BLOOM_SEED=$SEED
-export BLOOM_JAIL_VAR_BATCH="${BLOOM_JAIL_VAR_BATCH:-15}"
+export BLOOM_API_JAIL_VAR_BATCH="${BLOOM_API_JAIL_VAR_BATCH:-15}"
+# Own env names; BLOOM_JAIL_* stays bound to jailbroken_output and is not set here.
+export BLOOM_API_JAIL_ENABLED=1
 
 ROOT=runs_dsv4/${BEH}/${MODELDIR}
 case "$ARM" in
   vanilla)
-    export BLOOM_FOLDER=${ROOT}/api_vanilla_15s ;;
+    export BLOOM_FOLDER=${ROOT}/api_vanilla_15s
+    export BLOOM_API_JAIL_TARGET_ONLY=1 ;;
   elicited)
     export BLOOM_FOLDER=${ROOT}/api_elicited_15s
-    export BLOOM_JAIL_MODEL=$TARGET
-    export BLOOM_JAIL_B1=0 BLOOM_JAIL_BETA=1 BLOOM_JAIL_FLOOR=0 ;;
+    export BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
   overlap)
     PICK="${BLOOM_API_PICK:-combined}"
     BETA="${BLOOM_API_BETA:-1}"
@@ -103,13 +105,11 @@ case "$ARM" in
     export BLOOM_API_PICK=$PICK BLOOM_API_BETA=$BETA BLOOM_API_FALLBACK=$FB
     if [ "$BETA" = "1" ]; then BSUF=""; else BSUF="_b${BETA}"; fi
     if [ "$FB" = "target_sample" ]; then FSUF=""; else FSUF="_fb${FB#top5_}"; fi
-    if [ "${BLOOM_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
+    if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     FL="${BLOOM_API_FB_FLOOR:-0}"
     if [ "$FL" = "0" ]; then LSUF=""; else LSUF="_fl${FL}"; export BLOOM_API_FB_FLOOR=$FL; fi
     export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}_15s
-    export BLOOM_JAIL_MODEL=$TARGET
-    export BLOOM_API_RULE=overlap
-    export BLOOM_JAIL_FLOOR=0 ;;
+    export BLOOM_API_RULE=overlap ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
 

@@ -200,7 +200,7 @@ cfg = DotDict({
     },
     "jailbroken_output": {
         "enabled":  False,                        # jail on/off: steer the sampling step (contrastive PoE for target tokens)
-        "engine": "hf_full",                      # vllm_topk = legacy top-K logit_bias | hf_full = exact full-vocab PoE (HF)
+        "engine": "hf_full",                      # hf_full ONLY (exact full-vocab PoE via HF). vllm_topk was removed and api_tilt lives in its own section, api_jailbroken_output; anything else raises.
         "var_batch": 15,                          # hf_full engine: cross-scenario batch size (slots per turn-generate) for the jail rollout. Override with BLOOM_JAIL_VAR_BATCH.
         "model": "self",                          # jail/proposal model. "self" (or "") = self-jail = the target model (default). Set local/<hf-name> for a distinct proposal (e.g. an abliterated variant). Override with BLOOM_JAIL_MODEL.
         "prefill": True,                          # toggle: True (default) = use the behaviour file's jailbroken_output_prefill; False = no prefill
@@ -208,14 +208,24 @@ cfg = DotDict({
         "target_floor": 1e-4,                     # naturalness floor ON by default: mask tokens with target prob < floor before sampling the tilt (argmax(target) fallback). 0 = off (no-floor ablation only).
         "b1": 1,                                  # target-term weight in z = b1*target + b2*jail - b3*neg (default 1). 0 = floor-only jail (drop the target term). None also accepted (legacy code path; numerically identical to 1). The cfg.tokbias_output baseline works at any b1.
         "b2": 4.0,                                # jail-expert weight in z = b1*target + b2*jail - b3*neg (PoE weight on log p_jailbroken); only used when enabled=True. Tuned per (model, behaviour) — the sweep sets it via BLOOM_JAIL_BETA.
-        "api_rule": "corner",                     # api_tilt engine ONLY (inert on hf_full/vllm_topk). "corner" = the two mixing-free tilt points (b1=1,b2=0 or b1=0,b2!=0). "overlap" = per-token decode taking the elicited-best member of the two top-k candidate sets' intersection, falling back to a plain target sample when they are disjoint. Override with BLOOM_API_RULE.
-        "api_pick": "argmax",                     # api_rule=overlap: "argmax" = most elicited-probable member of the overlap (deterministic, so rounds repeat); "sample" = draw from the overlap in proportion to elicited probability (keeps pool diversity). Override with BLOOM_API_PICK.
-        "api_fallback": "target_sample",           # api_rule=overlap: what to emit when the two top-k sets are DISJOINT. "target_sample" = plain draw from the target's full distribution (free; the provider already sampled one). "top5_argmax" / "top5_random" / "top5_weighted" restrict that choice to the target's own top-k. Fires on ~1-6% of positions. Override with BLOOM_API_FALLBACK.
-        "api_fb_floor": 0.0,                      # api_rule=overlap + api_fallback=jail_maxtarget: minimum TARGET probability (percent) an elicited candidate must reach to be emitted at an empty-overlap position; below it the position reverts to target_sample. 0 disables. Makes min-of-mins a construction rather than a statistic, at no extra API cost (jail_maxtarget has already priced every candidate). Override with BLOOM_API_FB_FLOOR.
-        "api_fb_tries": 5,                        # api_fallback=jail_resample: max draws from the elicited distribution before keeping the most target-plausible of them. Override with BLOOM_API_FB_TRIES.
-        "api_beta": 1.0,                          # api_rule=overlap: weight on the ELICITED term of the combined score, z = l_target + api_beta * l_elicited over the overlap. The tilt's b2 knob on the top-k candidate set; 1.0 = plain product of probabilities. Override with BLOOM_API_BETA.
-        "api_top_k": 5,                           # api_rule=overlap: candidates requested per position per context. Fireworks caps this at 5.
         "b3": 0.0,                                # negative-steering weight in z = b1*target + b2*jail - b3*neg. 0 = off (the only knob; override BLOOM_JAIL_B3). Ablation: W2S logit-difference. When b3>0, the neg prompts load from the behaviour yaml (jailbroken_output_neg_system_prompt / _neg_user_prompt / _neg_prefill), or cfg jailbroken_output.neg_* if set.
+    },
+    # Hosted-API elicitation stream (bloom/api_rollout.py), for an `api/<model>` target.
+    # Separate from jailbroken_output, the paper's LogitTilt on hf_full weights.
+    "api_jailbroken_output": {
+        "enabled": False,                         # on/off for the api stream. An api/ target REQUIRES this (the un-steered corner is target_only=True, not a separate path). Override with BLOOM_API_JAIL_ENABLED.
+        "target_only": False,                     # b1=1,b2=0 corner: plain target sampling over the API, no elicited context stepped. The vanilla/BoN reference row.
+        "var_batch": 15,                          # cross-scenario batch size (scenarios advanced in lockstep per turn). Override with BLOOM_JAIL_VAR_BATCH.
+        "prefill": True,                          # True = use the behaviour file's jailbroken_output_prefill to condition the ELICITED context; False = none. Never sampled, only conditioned on.
+        "b1": 1.0,                                # target-term weight. Only the two mixing-free corners are reproducible over a text API: b1=1,b2=0 (target only) and b1=0,b2!=0 (elicited only). A genuine mix needs full-vocab logits from both contexts and is refused.
+        "b2": 1.0,                                # elicited-term weight (see b1).
+        "rule": "corner",                         # "corner" = one of the two mixing-free points above. "overlap" = per-token decode over the INTERSECTION of the two contexts' top-k candidate sets. Override with BLOOM_API_RULE.
+        "pick": "elicited",                       # rule=overlap: which overlap member to emit. elicited | target | combined | combined_min | combined_sample | random | sample. Override with BLOOM_API_PICK.
+        "beta": 1.0,                              # rule=overlap, pick=combined*: weight on the elicited term of z = l_target + beta*l_elicited, restricted to the overlap. The tilt's b2 knob on the top-k candidate set. Override with BLOOM_API_BETA.
+        "top_k": 5,                               # candidates requested per position per context. Fireworks caps this at 5.
+        "fallback": "target_sample",              # what to emit when the two top-k sets are DISJOINT (~1-3% of positions, and where the behaviour actually lives). target_sample | top5_argmax | top5_random | top5_weighted resolve it from the TARGET; jail_sample | jail_argmax | jail_maxtarget | jail_resample resolve it from the ELICITED side. Override with BLOOM_API_FALLBACK.
+        "fb_floor": 0.0,                          # jail_maxtarget / jail_resample: minimum TARGET probability (percent) an elicited candidate must reach to be emitted. 0 disables. Override with BLOOM_API_FB_FLOOR.
+        "fb_tries": 5,                            # jail_resample: max draws from the elicited distribution (sampled WITHOUT replacement via logit_bias) before keeping the most target-plausible of them. Override with BLOOM_API_FB_TRIES.
     },
     "tokbias_output": {                           # static logit-bias baseline (z = target + lambda*bias over the whole vocab) — a separate elicitation method from jail. Numeric knobs here; the prompt content (prompt / neg_prompt / words) lives in the behaviour yaml (tokbias_output_prompt / _neg_prompt / _words). Every field overridable via BLOOM_TOKBIAS_*.
         "enabled": False,                         #   on/off: when False the bias vector is never computed (short-circuits before any prompt eval). Override with BLOOM_TOKBIAS_ENABLED.
@@ -275,13 +285,21 @@ if __name__ == "__main__":
         # without this the judgment-stage auditor stays on GPU 0 and two pipelines on different GPUs
         # collide ("engine core init failed on GPU 0").
         ("BLOOM_EVAL_GPU",       ("evaluator_gpu_id",),                       int),
-        ("BLOOM_API_RULE",       ("jailbroken_output", "api_rule"),           str),   # api_tilt: corner | overlap
-        ("BLOOM_API_PICK",       ("jailbroken_output", "api_pick"),           str),   # api_rule=overlap: elicited | target | combined | combined_min | combined_sample | random | sample
-        ("BLOOM_API_FALLBACK",   ("jailbroken_output", "api_fallback"),       str),
-        ("BLOOM_API_BETA",       ("jailbroken_output", "api_beta"),         float),
-        ("BLOOM_API_FB_FLOOR",   ("jailbroken_output", "api_fb_floor"),     float),
-        ("BLOOM_API_FB_TRIES",   ("jailbroken_output", "api_fb_tries"),       int),   # jail_resample only: max elicited draws   # jail_maxtarget only: min target prob (percent) for an emitted fallback token   # api_rule=overlap: weight on the elicited term of the combined score   # api_rule=overlap, disjoint sets: target_sample | top5_argmax | top5_random | top5_weighted
-        ("BLOOM_API_TOPK",       ("jailbroken_output", "api_top_k"),          int),   # api_rule=overlap: candidates per position (Fireworks max 5)
+        ("BLOOM_API_RULE",       ("api_jailbroken_output", "rule"),           str),   # api_tilt: corner | overlap
+        ("BLOOM_API_PICK",       ("api_jailbroken_output", "pick"),           str),   # api_rule=overlap: elicited | target | combined | combined_min | combined_sample | random | sample
+        ("BLOOM_API_FALLBACK",   ("api_jailbroken_output", "fallback"),       str),   # disjoint top-k: target_sample|top5_* (target side) | jail_sample|jail_argmax|jail_maxtarget|jail_resample (elicited side)
+        ("BLOOM_API_BETA",       ("api_jailbroken_output", "beta"),         float),
+        ("BLOOM_API_FB_FLOOR",   ("api_jailbroken_output", "fb_floor"),     float),  # jail_maxtarget/jail_resample: min target prob (percent) for an emitted fallback token
+        ("BLOOM_API_FB_TRIES",   ("api_jailbroken_output", "fb_tries"),       int),   # jail_resample: max elicited draws
+        ("BLOOM_API_TOPK",       ("api_jailbroken_output", "top_k"),          int),   # rule=overlap: candidates per position (Fireworks max 5)
+        # Own names, not BLOOM_JAIL_*: those stay bound to jailbroken_output, so a launcher
+        # cannot half-configure one stream with the other's variables.
+        ("BLOOM_API_JAIL_ENABLED",     ("api_jailbroken_output", "enabled"),     _envbool),
+        ("BLOOM_API_JAIL_TARGET_ONLY", ("api_jailbroken_output", "target_only"), _envbool),
+        ("BLOOM_API_JAIL_PREFILL",     ("api_jailbroken_output", "prefill"),     _envbool),
+        ("BLOOM_API_JAIL_B1",          ("api_jailbroken_output", "b1"),            float),
+        ("BLOOM_API_JAIL_B2",          ("api_jailbroken_output", "b2"),            float),
+        ("BLOOM_API_JAIL_VAR_BATCH",   ("api_jailbroken_output", "var_batch"),       int),
         ("BLOOM_JUDGE_MODEL",    ("judgment", "model"),                       str),   # non-'local/' id => hosted API via litellm
         ("BLOOM_JUDGE_THINKING", ("judgment", "thinking"),                    _envbool),
         ("BLOOM_EVAL_MAXTOK",    ("rollout", "evaluator_max_tokens"),         int),   # raise eval cap for hosted-API eval WITH thinking (budget reserved inside max_tokens)

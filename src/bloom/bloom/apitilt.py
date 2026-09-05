@@ -103,14 +103,11 @@ class _TokenResolver:
         from tokenizers import Tokenizer
         self._tok = Tokenizer.from_file(path)
         self._by_text: Dict[str, int] = {}
-        # Strings that MORE THAN ONE id decodes to are ambiguous and must not be resolved:
-        # the provider reports candidates as text, so for a colliding string there is no way
-        # to tell which id it scored. Keeping the lowest id (the previous behaviour) emits a
-        # token the model never proposed. Measured cost of that: one position where the
-        # target's top-1 '�' at 82.55% resolved to id 97, whose true probability there
-        # was 1.04e-13 -- which then set min-of-mins for the whole arm. Ambiguous strings are
-        # now dropped from the map, so id_of returns None and the caller treats them as
-        # unresolvable (counted in n_unres) instead of silently emitting the wrong token.
+        # 36 strings (all U+FFFD byte-fallback variants) decode from more than one id.
+        # Candidates arrive as TEXT, so a colliding string cannot be resolved -- keeping the
+        # lowest id emitted a token the model never proposed (measured: '�' reported at
+        # 82.55% resolved to id 97, true probability 1.04e-13). Dropped from the map instead,
+        # so id_of returns None and the caller counts it in n_unres.
         _ambiguous: set = set()
         for i in range(self._tok.get_vocab_size()):
             s = self._tok.decode([i], skip_special_tokens=False)
@@ -373,9 +370,8 @@ class ApiTiltTarget:
     def cand_logprob(self, ctx_ids: List[int], cand_id: int) -> float:
         """Teacher-forced logprob of `cand_id` as the NEXT token after `ctx_ids`.
 
-        Used by the jail_maxtarget fallback to price a candidate the target's own top-k does
-        not contain. Sends ids (never text) so the position is exact, and costs one
-        max_tokens=0 call. Only reached on empty-overlap positions (~1% of tokens).
+        Prices a candidate outside the target's own top-k. Ids, never text, so the position is
+        exact. One max_tokens=0 call, only on empty-overlap positions (~1% of tokens).
         """
         lp = self._echo(list(ctx_ids) + [int(cand_id)])
         ids = list(lp.get("token_ids") or [])
@@ -424,11 +420,9 @@ class ApiTiltTarget:
         directly. `top_p`/`top_k` are pinned wide open so that sample is a genuine draw
         from the whole distribution, not a truncated one.
 
-        `exclude_ids` suppresses specific tokens via logit_bias, giving sampling WITHOUT
-        replacement across repeated calls. Verified supported on Fireworks: biasing the
-        top token by -100 removed it from 6/6 draws. Needed because independent redraws at a
-        peaked position return the SAME token nearly every time -- which is exactly the
-        position where a resample loop has to find an alternative.
+        `exclude_ids` suppresses tokens via logit_bias -> sampling WITHOUT replacement across
+        calls. Needed because independent redraws at a peaked position return the same token
+        nearly every time, which is exactly where a resample loop must find an alternative.
 
         Returns {"top": [(token_string, logprob) x top_k], "sampled_id", "sampled_str",
         "sampled_lp", "cached"}.
@@ -479,13 +473,9 @@ def load_api_target(target_model_id: str) -> Dict:
 def _record_cost(client, tag: str, extra: Optional[Dict] = None) -> None:
     """Append one cost record to <BLOOM_RUNS_ROOT>/<BLOOM_FOLDER>/api_cost.jsonl.
 
-    Deliberately NOT printed: cost is worth having on every run but only worth reading when
-    asked for. Cumulative client counters plus a per-batch wall time, so a later diff of two
-    consecutive lines gives that batch's own cost. Wall time alone is not comparable across
-    runs -- a degraded endpoint moved the same arm from ~100 to ~500 s/1k tokens -- which is
-    why calls/tokens are recorded alongside it.
-
-    Never allowed to break a run: any failure here is swallowed.
+    Recorded, never printed. Cumulative counters, so diffing two lines gives one batch. Calls
+    and tokens sit alongside wall time because wall time is not comparable across runs -- a
+    degraded endpoint moved the same arm from ~100 to ~500 s/1k tokens. Failures swallowed.
     """
     try:
         root = os.environ.get("BLOOM_RUNS_ROOT", "") or ""
@@ -544,32 +534,19 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # "sample" draws from the overlap in proportion to the elicited probabilities instead,
     # which keeps round-to-round diversity for pools and post-run selection.
     pick_mode = str(jail_runtime_cfg.get("api_pick", "elicited") or "elicited")
-    # What to emit when the two top-k sets are DISJOINT. "target_sample" is a plain draw
-    # from the target's full distribution (the provider already sampled one, so it costs
-    # nothing); the top5_* variants restrict that choice to the target's own top-k instead.
-    # The jail_* variants take the ELICITED side instead: jail_sample is that context's own
-    # full-distribution draw, jail_argmax its top-1. Those are the positions where the two
-    # contexts disagree most (disjoint top-k), so conceding them to the elicited side is
-    # the most aggressive form of the rule. Only fires on ~1-6% of positions, so it is a
-    # small lever by construction.
-    #
-    # jail_* needs care on the metric: a token drawn from the elicited distribution is
-    # usually NOT in the target's top-k, so its target logprob is unknown at decode time.
-    # Dropping those from the plausibility mean would silently EXCLUDE exactly the tokens
-    # the target dislikes and inflate the arm. The sequence is therefore re-scored against
-    # the target after generation (one extra call per turn) to fill them in exactly.
+    # What to emit when the two top-k sets are DISJOINT (~1-3% of positions, and where the
+    # behaviour lives). target_sample / top5_* resolve from the TARGET; jail_* from the
+    # ELICITED side -- those need the post-hoc rescore below, since an elicited token is
+    # usually outside the target top-k and its logprob is unknown at decode time.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
     # Weight on the ELICITED term of the combined score: z = l_target + beta * l_elicited,
     # restricted to the overlap. This is the tilt's own b2 knob, reintroduced on the top-k
     # candidate set; beta=1 is the plain product of the two probabilities. Under
     # combined_sample it also sharpens the draw, exactly as b2 does on the local path.
     beta = float(jail_runtime_cfg.get("api_beta", 1.0) or 1.0)
-    # Minimum TARGET probability (percent) an elicited candidate must reach before it may be
-    # emitted at an empty-overlap position. 0 disables. Only jail_maxtarget consults it,
-    # because only that mode has already priced every candidate -- so the guarantee costs no
-    # extra calls. If the best of the elicited top-k is still below the floor, the position
-    # reverts to target_sample. That turns min-of-mins from a statistic into a construction:
-    # no token below the floor is ever emitted at a fallback.
+    # Minimum TARGET probability (percent) an elicited candidate must reach to be emitted at
+    # a fallback; below it the position reverts to target_sample. 0 disables. Read by
+    # jail_maxtarget and jail_resample, which have already priced their candidates.
     fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
@@ -671,37 +648,25 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     elif fb_mode == "jail_argmax" and jr["top"]:
                         cand = jr["top"][0][0]
                     elif fb_mode == "jail_resample":
-                        # Draw from the elicited FULL distribution, accept the first draw
-                        # whose TARGET probability clears api_fb_floor, and fall back to the
-                        # best of at most `fb_tries` draws if none do.
-                        #
-                        # Differs from jail_maxtarget in what it optimises. maxtarget always
-                        # takes the most target-plausible member of the elicited top-k, which
-                        # biases every fallback position toward the target and cost ~20
-                        # presence points. This only intervenes when a draw is actually bad,
-                        # so the elicited preference survives wherever it is already
-                        # acceptable. It also stays stochastic, so rounds differ and a pool
-                        # exists for post-run selection.
+                        # Accept the first elicited draw clearing api_fb_floor, else the best
+                        # of `fb_tries`. Unlike jail_maxtarget it only intervenes when a draw
+                        # is actually bad, so the elicited preference survives where it is
+                        # already acceptable (maxtarget overrides every position and cost ~20
+                        # presence points). Stochastic, so rounds differ and pools stay diverse.
                         _tries = []
                         for _k in range(fb_tries):
                             if _k == 0:
                                 _sid, _slp = jr["sampled_id"], jr["sampled_lp"]
                             else:
-                                # Sample WITHOUT replacement: suppress every id already
-                                # drawn, so each attempt explores a genuinely new candidate.
-                                # Without this, a peaked elicited position returns the same
-                                # token on every redraw and the loop does nothing.
+                                # Without replacement: a peaked position returns the same
+                                # token on every redraw, so the loop would do nothing.
                                 _jr2 = client.next_topk(
                                     j_ids, top_k, temperature, aff + "-j",
                                     exclude_ids=[x[1] for x in _tries])
-                                # NB _slp here is under the BIASED distribution (logit_bias
-                                # renormalises), so it overstates the true elicited
-                                # probability by 1/(1 - suppressed mass). Deliberately not
-                                # corrected: the elicited series feeds nothing that is
-                                # reported -- presence, plausibility, min and the band are
-                                # all target-side -- and its only consumer, freeselect.py's
-                                # margin, moves by ~0.02 nats since redraws are a fraction
-                                # of the ~1% fallback rate. Not worth a call per resample.
+                                # _slp is under the BIASED distribution, so it overstates the
+                                # true elicited probability. Not corrected: nothing reported
+                                # depends on it (all target-side), and freeselect's margin
+                                # moves ~0.02 nats. Not worth a call per resample.
                                 _sid, _slp = _jr2["sampled_id"], _jr2["sampled_lp"]
                             if _sid is None:
                                 continue
@@ -717,14 +682,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                             n_resamples += len(_tries) - 1
                             tid, _forced_t_lp, _forced_j_lp = _bid, _bt, _blp
                     elif fb_mode == "jail_maxtarget" and jr["top"]:
-                        # Keep the whole elicited top-k as the candidate set, then price
-                        # every member under the TARGET and emit the most plausible one.
-                        # Constant cost (k scoring calls) rather than a cascade that might
-                        # never clear a threshold, and it needs no threshold at all: it
-                        # maximises the floor subject to staying inside the elicited set.
-                        # The target's own top-k cannot supply these prices -- the sets are
-                        # disjoint here by construction, which is why the position is a
-                        # fallback in the first place.
+                        # Price the whole elicited top-k under the TARGET, emit the most
+                        # plausible. Constant cost k, no threshold to tune. The target's own
+                        # top-k cannot supply these prices: the sets are disjoint here.
                         _cands = [(t, res.id_of(t)) for t, _ in jr["top"]]
                         _cands = [(t, i) for t, i in _cands if i is not None]
                         if _cands:
@@ -732,12 +692,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 _lps = list(_ex.map(
                                     lambda ci: client.cand_logprob(t_ids, ci[1]), _cands))
                             _best = max(range(len(_cands)), key=lambda k: _lps[k])
-                            # A position can have its ENTIRE elicited top-k be hopeless under
-                            # the target -- measured: one token at 1.0e-13 whose four
-                            # alternatives were no better. Picking the least-bad of five
-                            # terrible options still emits an impossible token, and
+                            # A position can have its ENTIRE elicited top-k be hopeless, and
                             # min-of-mins is a single-token statistic, so one such position
-                            # erases the gain from every other. Revert those to target_sample.
+                            # erases every other gain. Revert those to target_sample.
                             if fb_floor > 0.0 and math.exp(_lps[_best]) * 100.0 < fb_floor:
                                 cand = None
                                 n_floored += 1
@@ -779,12 +736,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         # jail_* fallbacks leave holes in t_lps (the emitted token was outside the target's
         # top-k). Re-score the exact id sequence against the target to fill them in; one
         # extra teacher-forced call per turn, and only for these arms.
-        # Unconditional for the jail_* arms, not only when a hole exists. next_topk and
-        # echo scoring disagree by about -0.6pp on the mean (measured: 71.85% vs 71.24% on
-        # a 250-token turn, minima identical), so a transcript mixing both paths would be
-        # measured two ways at once. Rescoring everything puts all jail_* arms on the echo
-        # path -- the same offset for all of them, and a conservative one, since echo reads
-        # slightly LOWER than next_topk.
+        # Unconditional, not only when a hole exists: next_topk and echo scoring disagree by
+        # ~-0.6pp on the mean, so a transcript mixing both would be measured two ways at once.
         if fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget", "jail_resample") and gen:
             # Mandatory, not best-effort: without it the plausibility mean would be taken
             # over only the tokens the target happened to rank highly, which is precisely
@@ -818,11 +771,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
-    # Exact counters, not estimates: nf = positions where the two top-k sets were DISJOINT,
-    # nu = positions where the overlap was non-empty but the chosen surface form could not be
-    # resolved to a token id. Reported separately because they are different events; nu
-    # should be ~0 given the resolver validation, and printing it makes that checkable
-    # instead of assumed.
+    # nf = disjoint top-k sets; nu = overlap non-empty but the pick was unresolvable. Separate
+    # counters because they are different events, and nu being ~0 should be checkable.
     print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
           f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
