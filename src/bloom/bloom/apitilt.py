@@ -356,6 +356,22 @@ class ApiTiltTarget:
                 f"id-array prompt; this engine needs one that does not.")
         return [float(v) for v in lps[-n:]]
 
+    def cand_logprob(self, ctx_ids: List[int], cand_id: int) -> float:
+        """Teacher-forced logprob of `cand_id` as the NEXT token after `ctx_ids`.
+
+        Used by the jail_maxtarget fallback to price a candidate the target's own top-k does
+        not contain. Sends ids (never text) so the position is exact, and costs one
+        max_tokens=0 call. Only reached on empty-overlap positions (~1% of tokens).
+        """
+        lp = self._echo(list(ctx_ids) + [int(cand_id)])
+        ids = list(lp.get("token_ids") or [])
+        lps = list(lp.get("token_logprobs") or [])
+        if len(ids) != len(ctx_ids) + 1 or ids[-1] != int(cand_id):
+            raise RuntimeError(
+                f"api_tilt cand_logprob: provider did not echo the candidate id back "
+                f"(sent {len(ctx_ids)}+1, got {len(ids)}).")
+        return float(lps[-1])
+
     def score_ids_topk(self, prefix: str, cont_ids: List[int], top_k: int = 5) -> Dict:
         """Like `score_ids`, but also returns the top-`top_k` ALTERNATIVES at each position.
 
@@ -578,6 +594,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     n_fallback += 1
                     jmap = dict(jr["top"])
                     cand = None
+                    _forced_t_lp = None
                     if fb_mode == "top5_argmax" and tr["top"]:
                         cand = tr["top"][0][0]
                     elif fb_mode == "top5_random" and tr["top"]:
@@ -586,14 +603,36 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         cand = _wsample(tr["top"], lambda x: x[1])[0]
                     elif fb_mode == "jail_argmax" and jr["top"]:
                         cand = jr["top"][0][0]
+                    elif fb_mode == "jail_maxtarget" and jr["top"]:
+                        # Keep the whole elicited top-k as the candidate set, then price
+                        # every member under the TARGET and emit the most plausible one.
+                        # Constant cost (k scoring calls) rather than a cascade that might
+                        # never clear a threshold, and it needs no threshold at all: it
+                        # maximises the floor subject to staying inside the elicited set.
+                        # The target's own top-k cannot supply these prices -- the sets are
+                        # disjoint here by construction, which is why the position is a
+                        # fallback in the first place.
+                        _cands = [(t, res.id_of(t)) for t, _ in jr["top"]]
+                        _cands = [(t, i) for t, i in _cands if i is not None]
+                        if _cands:
+                            with ThreadPoolExecutor(max_workers=len(_cands)) as _ex:
+                                _lps = list(_ex.map(
+                                    lambda ci: client.cand_logprob(t_ids, ci[1]), _cands))
+                            _best = max(range(len(_cands)), key=lambda k: _lps[k])
+                            cand = _cands[_best][0]
+                            # exact target logprob, so no post-hoc rescore is needed
+                            _forced_t_lp = _lps[_best]
                     elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
-                                         "top5_weighted", "jail_sample", "jail_argmax"):
+                                         "top5_weighted", "jail_sample", "jail_argmax",
+                                         "jail_maxtarget"):
                         raise RuntimeError(
                             f"jailbroken_output.api_fallback={fb_mode!r} unknown (target_sample "
                             f"| top5_argmax | top5_random | top5_weighted | jail_sample "
-                            f"| jail_argmax)")
+                            f"| jail_argmax | jail_maxtarget)")
                     cid = res.id_of(cand) if cand is not None else None
-                    if cid is not None:
+                    if cid is not None and fb_mode == "jail_maxtarget" and _forced_t_lp is not None:
+                        tid, t_lp, j_lp = cid, _forced_t_lp, jmap.get(cand)
+                    elif cid is not None:
                         # tmap only covers the target's own top-k. A jail_argmax candidate
                         # is by construction outside it (the sets are disjoint here), so its
                         # target logprob is unknown until the post-hoc rescore.
@@ -616,7 +655,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         # jail_* fallbacks leave holes in t_lps (the emitted token was outside the target's
         # top-k). Re-score the exact id sequence against the target to fill them in; one
         # extra teacher-forced call per turn, and only for these arms.
-        if fb_mode in ("jail_sample", "jail_argmax") and gen and any(l != l for l in t_lps):
+        # Unconditional for the jail_* arms, not only when a hole exists. next_topk and
+        # echo scoring disagree by about -0.6pp on the mean (measured: 71.85% vs 71.24% on
+        # a 250-token turn, minima identical), so a transcript mixing both paths would be
+        # measured two ways at once. Rescoring everything puts all jail_* arms on the echo
+        # path -- the same offset for all of them, and a conservative one, since echo reads
+        # slightly LOWER than next_topk.
+        if fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget") and gen:
             # Mandatory, not best-effort: without it the plausibility mean would be taken
             # over only the tokens the target happened to rank highly, which is precisely
             # the bias this arm is being tested for. _prob_summary also cannot consume a
