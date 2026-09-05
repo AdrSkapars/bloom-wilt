@@ -154,6 +154,18 @@ on the next line, `[api_tilt rule=overlap pick=... beta=... fb=...]`. Left as-is
 patching a paper file for a cosmetic string.
   - [ ] DeepSeek goblin, selfpres   <- LAST, re-probe DeepSeek latency before launching
 
+### Column B running (02:10-)
+
+  - [x] gpt-oss self_harm b=2 (done 02:18, 8m4s): 14.0 @ 76.13% => cap -4.0%
+        vs b=1 -1.6%, elic-pick +4.8%, vanilla 17.3 @ 78.79%.
+
+        PREDICTION CHECK, flagged for GLM/DeepSeek to settle: combined scores
+        l_target + beta*l_elicited, so as beta grows the argmax converges to elicited-pick.
+        b=2 should therefore land BETWEEN b=1 and elic-pick. Here it goes the wrong way.
+        But the full spread on this cell is 14.0-21.3, about one scenario on n=15 -- all
+        four arms are mutually indistinguishable, so gpt-oss self_harm cannot decide it.
+        GLM and DeepSeek can: their capA-capC gaps are 20-45pp, far outside noise.
+
 **B. `BLOOM_API_PICK=combined BLOOM_API_BETA=2`** -- the existing rule at the beta that
 worked best on DeepSeek self_harm (48.0 @ 66.96%, against 26.0 at beta=1).
 
