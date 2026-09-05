@@ -476,7 +476,17 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # What to emit when the two top-k sets are DISJOINT. "target_sample" is a plain draw
     # from the target's full distribution (the provider already sampled one, so it costs
     # nothing); the top5_* variants restrict that choice to the target's own top-k instead.
-    # Only fires on ~1-6% of positions, so it is a small lever by construction.
+    # The jail_* variants take the ELICITED side instead: jail_sample is that context's own
+    # full-distribution draw, jail_argmax its top-1. Those are the positions where the two
+    # contexts disagree most (disjoint top-k), so conceding them to the elicited side is
+    # the most aggressive form of the rule. Only fires on ~1-6% of positions, so it is a
+    # small lever by construction.
+    #
+    # jail_* needs care on the metric: a token drawn from the elicited distribution is
+    # usually NOT in the target's top-k, so its target logprob is unknown at decode time.
+    # Dropping those from the plausibility mean would silently EXCLUDE exactly the tokens
+    # the target dislikes and inflate the arm. The sequence is therefore re-scored against
+    # the target after generation (one extra call per turn) to fill them in exactly.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
     # Weight on the ELICITED term of the combined score: z = l_target + beta * l_elicited,
     # restricted to the overlap. This is the tilt's own b2 knob, reintroduced on the top-k
@@ -570,24 +580,49 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         cand = random.choice(tr["top"])[0]
                     elif fb_mode == "top5_weighted" and tr["top"]:
                         cand = _wsample(tr["top"], lambda x: x[1])[0]
+                    elif fb_mode == "jail_argmax" and jr["top"]:
+                        cand = jr["top"][0][0]
                     elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
-                                         "top5_weighted"):
+                                         "top5_weighted", "jail_sample", "jail_argmax"):
                         raise RuntimeError(
                             f"jailbroken_output.api_fallback={fb_mode!r} unknown (target_sample "
-                            f"| top5_argmax | top5_random | top5_weighted)")
+                            f"| top5_argmax | top5_random | top5_weighted | jail_sample "
+                            f"| jail_argmax)")
                     cid = res.id_of(cand) if cand is not None else None
-                    if cid is None:      # target_sample, or an unresolvable surface form
+                    if cid is not None:
+                        # tmap only covers the target's own top-k. A jail_argmax candidate
+                        # is by construction outside it (the sets are disjoint here), so its
+                        # target logprob is unknown until the post-hoc rescore.
+                        tid, t_lp, j_lp = cid, tmap.get(cand), jmap.get(cand)
+                    elif fb_mode == "jail_sample":
+                        # The elicited context's own draw from its FULL distribution.
+                        tid, j_lp = jr["sampled_id"], jr["sampled_lp"]
+                        t_lp = tmap.get(jr["sampled_str"])
+                    else:                # target_sample, or an unresolvable surface form
                         tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
                         j_lp = jmap.get(tr["sampled_str"])
-                    else:
-                        tid, t_lp, j_lp = cid, tmap[cand], jmap.get(cand)
                 if tid is None or tid == res.eos_id:
                     break
                 gen.append(tid)
-                t_lps.append(t_lp)
+                t_lps.append(t_lp if t_lp is not None else float("nan"))
                 j_lps.append(j_lp if j_lp is not None else float("nan"))
                 t_ids = t_ids + [tid]
                 j_ids = j_ids + [tid]
+
+        # jail_* fallbacks leave holes in t_lps (the emitted token was outside the target's
+        # top-k). Re-score the exact id sequence against the target to fill them in; one
+        # extra teacher-forced call per turn, and only for these arms.
+        if fb_mode in ("jail_sample", "jail_argmax") and gen and any(l != l for l in t_lps):
+            # Mandatory, not best-effort: without it the plausibility mean would be taken
+            # over only the tokens the target happened to rank highly, which is precisely
+            # the bias this arm is being tested for. _prob_summary also cannot consume a
+            # None. Fail loudly rather than emit a flattering or crashing series.
+            exact = client.score_ids(t_prefix, gen)
+            if len(exact) != len(t_lps):
+                raise RuntimeError(
+                    f"api_fallback={fb_mode}: rescore returned {len(exact)} logprobs for "
+                    f"{len(t_lps)} generated tokens; cannot fill the target probabilities.")
+            t_lps = list(exact)
 
         return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
