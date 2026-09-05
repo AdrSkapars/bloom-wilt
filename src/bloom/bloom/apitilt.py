@@ -367,6 +367,25 @@ class ApiTiltTarget:
                 f"id-array prompt; this engine needs one that does not.")
         return [float(v) for v in lps[-n:]]
 
+    def floored_target_sample(self, ids: List[int], top_k: int, temperature: float,
+                              floor_pct: float, p_max: float,
+                              affinity: Optional[str] = None) -> Dict:
+        """A draw from the TARGET whose probability cannot fall below `floor_pct` (percent).
+
+        min_p is relative (p >= min_p * p_max), so the absolute floor is expressed
+        per-position as floor/p_max -- p_max is already known from the target's own top-k, so
+        this costs one call and no extra scoring.
+        """
+        mp = (floor_pct / 100.0) / p_max if p_max > 0 else None
+        if mp is not None and mp > 1.0:
+            # The floor exceeds p_max: NO token can clear it. Falling back to a free draw
+            # here would emit anything at all, so take the argmax instead -- the closest the
+            # position can get to the floor.
+            return self.next_topk(ids, top_k, 0.0, affinity)
+        if mp is None or mp <= 0.0:
+            mp = None
+        return self.next_topk(ids, top_k, temperature, affinity, min_p=mp)
+
     def cand_logprob(self, ctx_ids: List[int], cand_id: int) -> float:
         """Teacher-forced logprob of `cand_id` as the NEXT token after `ctx_ids`.
 
@@ -411,7 +430,8 @@ class ApiTiltTarget:
 
     def next_topk(self, ids: List[int], top_k: int = 5, temperature: float = 1.0,
                   affinity: Optional[str] = None,
-                  exclude_ids: Optional[List[int]] = None) -> Dict:
+                  exclude_ids: Optional[List[int]] = None,
+                  min_p: Optional[float] = None) -> Dict:
         """One decode step: the top-`top_k` candidates for the position after `ids`.
 
         Asks for a single token so the response carries `top_logprobs[0]` — the
@@ -432,6 +452,11 @@ class ApiTiltTarget:
                  "logprobs": int(top_k), "echo": False}
         if exclude_ids:
             _body["logit_bias"] = {str(int(i)): -100 for i in exclude_ids}
+        if min_p is not None:
+            # Relative, not absolute: admits tokens with p >= min_p * p_max. Verified
+            # enforced on Fireworks (min_p=0.9 collapsed 14 draws to one token where the
+            # unrestricted prompt gave nine). The absolute form, epsilon_cutoff, is rejected.
+            _body["min_p"] = float(min_p)
         r = self._post(_body, affinity=affinity)
         ch = r["choices"][0]
         lp = ch.get("logprobs") or {}
@@ -688,11 +713,22 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 break
                         if _tries:
                             _bt, _bid, _blp = max(_tries, key=lambda x: x[0])
-                            _accepted = math.exp(_bt) * 100.0 >= fb_floor
-                            if not _accepted:
-                                n_floored += 1      # kept the best of the draws, none cleared
                             n_resamples += len(_tries) - 1
-                            tid, _forced_t_lp, _forced_j_lp = _bid, _bt, _blp
+                            if math.exp(_bt) * 100.0 >= fb_floor:
+                                tid, _forced_t_lp, _forced_j_lp = _bid, _bt, _blp
+                            else:
+                                # Every draw failed. Keeping the best of them still emits an
+                                # impossible token -- measured 1.16e-08 where the elicited
+                                # context was 100% certain, so sampling without replacement
+                                # only walked further into its tail. Give up on the elicited
+                                # side and take a floored target draw instead.
+                                n_floored += 1
+                                _fs = client.floored_target_sample(
+                                    t_ids, top_k, temperature, fb_floor,
+                                    math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
+                                tid = _fs["sampled_id"]
+                                _forced_t_lp = tmap.get(_fs["sampled_str"], float("nan"))
+                                _forced_j_lp = jmap.get(_fs["sampled_str"])
                     elif fb_mode == "jail_maxtarget" and jr["top"]:
                         # Price the whole elicited top-k under the TARGET, emit the most
                         # plausible. Constant cost k, no threshold to tune. The target's own
@@ -734,6 +770,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         # The elicited context's own draw from its FULL distribution.
                         tid, j_lp = jr["sampled_id"], jr["sampled_lp"]
                         t_lp = tmap.get(jr["sampled_str"])
+                    elif fb_floor > 0.0 and tmap:
+                        # target_sample under a floor: redraw with min_p so the target's own
+                        # sample cannot land below it either.
+                        _fs = client.floored_target_sample(
+                            t_ids, top_k, temperature, fb_floor,
+                            math.exp(max(tmap.values())), aff + "-t")
+                        tid = _fs["sampled_id"]
+                        t_lp = tmap.get(_fs["sampled_str"], float("nan"))
+                        j_lp = jmap.get(_fs["sampled_str"])
                     else:                # target_sample, or an unresolvable surface form
                         tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
                         j_lp = jmap.get(tr["sampled_str"])
