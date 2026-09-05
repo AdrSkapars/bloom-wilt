@@ -34,11 +34,21 @@ goes +5.6pp (round 1) -> +2.4pp (free selection) -> ~0 (oracle only). Last night
 Whether 2.4pp justifies 2x the API calls is a judgement call; leaning no.
 
 
-## RECOVERED 05-09 05:53 -- account active again, queue resumed
+## STILL BLOCKED -- the 05:53 "recovery" was a FALSE POSITIVE
 
-Probe returned 200 at 05:53 (suspended 04:55-05:53, ~1 hour). Relaunched immediately:
-  * `R5b_gptoss_elic.log` -- elicited-only 5 rounds, gpt-oss self_harm (MATCHED CONTROL)
-  * `R5b_glm_goblin.log`  -- GLM goblin elic-pick 5 rounds (re-run; round_1 reused)
+A single probe returned 200 at 05:53, I relaunched both runs on it, and both hit HTTP 412
+within a minute. Eight probes immediately afterwards: 412/8. The account never recovered.
+
+MY ERROR: one 200 is not recovery. It can be a routing or cache artifact. Fixed with
+`apigate.sh`, which exits 0 only when N consecutive spaced probes all return 200:
+
+    bash experiments/postpaper/api_tilt/apigate.sh 5 && <launch the next run>
+
+EVERY relaunch from here must be gated on it. Do not relaunch on a single probe again.
+
+No contamination from the false start: both runs died at their first request, leaving
+round_2 stubs containing only cfg.json and zero transcripts. Stubs removed; round_1 intact
+in both folders.
 
 ## (historical) BLOCKED 05-09 04:55 -- FIREWORKS ACCOUNT SUSPENDED
 
