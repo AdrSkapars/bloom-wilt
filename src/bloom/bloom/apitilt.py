@@ -530,6 +530,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # reverts to target_sample. That turns min-of-mins from a statistic into a construction:
     # no token below the floor is ever emitted at a fallback.
     fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
+    # jail_resample only: how many draws from the elicited distribution to try before giving
+    # up and keeping the most target-plausible of them.
+    fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
 
     def _one(job):
         idx, tm = job
@@ -544,6 +547,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         j_ids = client.prefix_ids(j_prefix)
 
         gen, t_lps, j_lps, n_fallback, n_unres, n_floored = [], [], [], 0, 0, 0
+        n_resamples = 0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -616,6 +620,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     jmap = dict(jr["top"])
                     cand = None
                     _forced_t_lp = None
+                    _forced_j_lp = None
                     if fb_mode == "top5_argmax" and tr["top"]:
                         cand = tr["top"][0][0]
                     elif fb_mode == "top5_random" and tr["top"]:
@@ -624,6 +629,38 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         cand = _wsample(tr["top"], lambda x: x[1])[0]
                     elif fb_mode == "jail_argmax" and jr["top"]:
                         cand = jr["top"][0][0]
+                    elif fb_mode == "jail_resample":
+                        # Draw from the elicited FULL distribution, accept the first draw
+                        # whose TARGET probability clears api_fb_floor, and fall back to the
+                        # best of at most `fb_tries` draws if none do.
+                        #
+                        # Differs from jail_maxtarget in what it optimises. maxtarget always
+                        # takes the most target-plausible member of the elicited top-k, which
+                        # biases every fallback position toward the target and cost ~20
+                        # presence points. This only intervenes when a draw is actually bad,
+                        # so the elicited preference survives wherever it is already
+                        # acceptable. It also stays stochastic, so rounds differ and a pool
+                        # exists for post-run selection.
+                        _tries = []
+                        for _k in range(fb_tries):
+                            if _k == 0:
+                                _sid, _slp = jr["sampled_id"], jr["sampled_lp"]
+                            else:
+                                _jr2 = client.next_topk(j_ids, top_k, temperature, aff + "-j")
+                                _sid, _slp = _jr2["sampled_id"], _jr2["sampled_lp"]
+                            if _sid is None:
+                                continue
+                            _tlp = client.cand_logprob(t_ids, _sid)
+                            _tries.append((_tlp, _sid, _slp))
+                            if math.exp(_tlp) * 100.0 >= fb_floor:
+                                break
+                        if _tries:
+                            _bt, _bid, _blp = max(_tries, key=lambda x: x[0])
+                            _accepted = math.exp(_bt) * 100.0 >= fb_floor
+                            if not _accepted:
+                                n_floored += 1      # kept the best of the draws, none cleared
+                            n_resamples += len(_tries) - 1
+                            tid, _forced_t_lp, _forced_j_lp = _bid, _bt, _blp
                     elif fb_mode == "jail_maxtarget" and jr["top"]:
                         # Keep the whole elicited top-k as the candidate set, then price
                         # every member under the TARGET and emit the most plausible one.
@@ -654,13 +691,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 _forced_t_lp = _lps[_best]   # exact; no rescore needed
                     elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
                                          "top5_weighted", "jail_sample", "jail_argmax",
-                                         "jail_maxtarget"):
+                                         "jail_maxtarget", "jail_resample"):
                         raise RuntimeError(
                             f"jailbroken_output.api_fallback={fb_mode!r} unknown (target_sample "
                             f"| top5_argmax | top5_random | top5_weighted | jail_sample "
-                            f"| jail_argmax | jail_maxtarget)")
+                            f"| jail_argmax | jail_maxtarget | jail_resample)")
                     cid = res.id_of(cand) if cand is not None else None
-                    if cid is not None and fb_mode == "jail_maxtarget" and _forced_t_lp is not None:
+                    if fb_mode == "jail_resample" and _forced_t_lp is not None:
+                        t_lp, j_lp = _forced_t_lp, _forced_j_lp     # tid already set above
+                    elif cid is not None and fb_mode == "jail_maxtarget" and _forced_t_lp is not None:
                         tid, t_lp, j_lp = cid, _forced_t_lp, jmap.get(cand)
                     elif cid is not None:
                         # tmap only covers the target's own top-k. A jail_argmax candidate
@@ -691,7 +730,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         # measured two ways at once. Rescoring everything puts all jail_* arms on the echo
         # path -- the same offset for all of them, and a conservative one, since echo reads
         # slightly LOWER than next_topk.
-        if fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget") and gen:
+        if fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget", "jail_resample") and gen:
             # Mandatory, not best-effort: without it the plausibility mean would be taken
             # over only the tokens the target happened to rank highly, which is precisely
             # the bias this arm is being tested for. _prob_summary also cannot consume a
@@ -707,7 +746,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
-                "n_floored": n_floored, "truncated": truncated}
+                "n_floored": n_floored, "n_resamples": n_resamples,
+                "truncated": truncated}
 
     jobs = list(enumerate(target_msgs_batch))
     if len(jobs) == 1:
@@ -718,6 +758,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nf = sum(o.pop("n_fallback") for o in out)
     nu = sum(o.pop("n_unres", 0) for o in out)
     nfl = sum(o.pop("n_floored", 0) for o in out)
+    nrs = sum(o.pop("n_resamples", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -730,6 +771,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
+          + (f", {nrs} resamples" if nrs else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     return out

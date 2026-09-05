@@ -1074,6 +1074,7 @@ def run_rollout_batched_local(
             "api_fallback": str(jail_cfg.get("api_fallback", "target_sample") or "target_sample"),
             "api_beta":  float(jail_cfg.get("api_beta", 1.0) or 1.0),
             "api_fb_floor": float(jail_cfg.get("api_fb_floor", 0.0) or 0.0),
+            "api_fb_tries": int(jail_cfg.get("api_fb_tries", 5) or 5),
             "api_top_k": int(jail_cfg.get("api_top_k", 5) or 5),
         }
         if not need_jail_model:
