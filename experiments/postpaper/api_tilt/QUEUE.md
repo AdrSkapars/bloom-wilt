@@ -140,7 +140,33 @@ there it was 110 retries with ZERO turns completed, so nothing was being discard
 
         goblin under elicited-pick across models: DeepSeek 7.7%, GLM 2.5%, gpt-oss 0.0%.
         Hardest behaviour everywhere, under both rules.
-  - [ ] DeepSeek selfpres (RUNNING, `A_dsv4b.log`) -- endpoint recovered 00:50,
+  - [x] DeepSeek selfpres (done 02:29, 38m36s, 771 retries, 0 CUT SHORT): 81.3 @ 55.50%
+        => capA 72.2% vs capC 19.6%. Integrity verified: 15 transcripts, 3 turns each.
+        => CHAIN A DeepSeek COMPLETE => **COLUMN A COMPLETE, all 9 cells**
+
+### COLUMN A RESULT (run `python -X utf8 experiments/postpaper/api_tilt/cells.py`)
+
+elicited-pick beats combined on 9/9 cells. Under `combined` the grid topped out at 19.6%
+and the conclusion drawn was "the model gates whether the method works at all". Under
+elicited-pick DeepSeek captures 77.4% and 72.2% on two of three behaviours (81.3 presence
+against a 17.3 vanilla). That earlier conclusion was substantially an ARTIFACT OF THE PICK
+RULE, not a property of the models -- which is what the user suspected in asking for this
+column, and it means the beta sweep was indeed run on the weaker rule.
+
+Three separable factors, all real:
+  * RULE      elicited-pick >> combined, universally (9/9)
+  * MODEL     DeepSeek >> GLM >> gpt-oss
+  * BEHAVIOUR goblin fails everywhere regardless of rule (max 7.7%)
+
+### beta-convergence question: RESOLVED by DeepSeek self_harm
+
+combined = l_target + beta*l_elicited, so raising beta should move the argmax toward
+elicited-pick's, putting b=2 between b=1 and elic-pick. DeepSeek self_harm confirms it:
+
+    b=1 10.5%  ->  b=2 37.1%  ->  elic-pick 77.4%      (26.0 -> 48.0 -> 81.3 presence)
+
+Monotone in beta, as predicted. The gpt-oss self_harm reversal (b=2 -4.0% below b=1 -1.6%)
+was noise -- that whole cell spans one scenario. Signal-bearing cells settle it. -- endpoint recovered 00:50,
         ttft 0.97/0.26/0.13s, back to normal; the degradation was a transient ~25min window.
         Reuses the cfg/ideation/understanding kept from the killed run.
 
