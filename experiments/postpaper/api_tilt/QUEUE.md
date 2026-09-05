@@ -180,6 +180,30 @@ still weights it. On a model whose top-1 is already strong -- gpt-oss has the hi
 vanilla plausibility in the grid -- keeping some target weight buys plausibility at equal
 presence. beta is a genuine dial, not merely a way-station on the road to elicited-only.
 
+### GOBLIN COMPLETE across all 3 models x 3 overlap rules (03:50) -- immune
+
+GLM goblin b=2: 10.0 @ 75.42% => 0.0%. Final goblin tally (capture %):
+
+    model      b=1    b=2   elic-pick    ceiling (elicited-only)
+    DeepSeek   4.6%   0.0%     7.7%       96.7
+    GLM        0.0%   0.0%     2.5%       90.7
+    gpt-oss    0.0%   0.0%     0.0%       84.7
+
+Nine arms, maximum 7.7%, every ceiling 84.7-96.7 and unused. Goblin is immune to the
+overlap approach under every rule and beta tested. With the gpt-oss evidence (presence
+pinned at floor while plausibility falls monotonically), the account is that goblin tokens
+are simply not in the target's top-5, and no rule restricted to re-ranking that set can
+introduce them.
+
+### The overlap constraint RAISES plausibility at low beta
+
+Noticed across cells and worth stating: comb b=1 frequently has HIGHER plausibility than
+vanilla -- goblin DeepSeek 71.96 -> 76.21, goblin GLM 70.32 -> 76.99, self_harm GLM
+70.60 -> 73.19. Mechanically sensible: intersecting two top-5s keeps consensus tokens,
+which the target itself also ranks highly, so the filter is a plausibility booster before
+the elicited weight begins pulling against it. Explains why b=1 can look "free" on the
+plausibility axis while delivering almost no behaviour.
+
 ### beta-monotonicity is only testable where there IS signal (03:24)
 
 DeepSeek goblin b=2: 10.0 @ 73.86% => cap 0.0%, BELOW b=1's 4.6%. Not monotone.
