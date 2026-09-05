@@ -506,7 +506,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         t_ids = client.prefix_ids(t_prefix)
         j_ids = client.prefix_ids(j_prefix)
 
-        gen, t_lps, j_lps, n_fallback = [], [], [], 0
+        gen, t_lps, j_lps, n_fallback, n_unres = [], [], [], 0, 0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -563,10 +563,14 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                             f"jailbroken_output.api_pick={pick_mode!r} unknown "
                             f"(elicited | target | combined | random | sample)")
                     tid = res.id_of(pick)
-                    if tid is None:                    # unresolvable surface form
+                    if tid is None:
+                        # The overlap was NON-empty; the chosen surface form just could not
+                        # be mapped back to a token id. Counted separately from the
+                        # empty-overlap case: they are different events and lumping them
+                        # made the reported "empty-overlap fallback %" an upper bound.
                         tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
                         j_lp = dict(jr["top"]).get(tr["sampled_str"])
-                        n_fallback += 1
+                        n_unres += 1
                     else:
                         t_lp = tmap[pick]
                         j_lp = dict(jr["top"])[pick]
@@ -627,7 +631,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
-                "n_fallback": n_fallback, "truncated": truncated}
+                "n_fallback": n_fallback, "n_unres": n_unres, "truncated": truncated}
 
     jobs = list(enumerate(target_msgs_batch))
     if len(jobs) == 1:
@@ -636,11 +640,18 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         with ThreadPoolExecutor(max_workers=min(len(jobs), 16)) as ex:
             out = list(ex.map(_one, jobs))
     nf = sum(o.pop("n_fallback") for o in out)
+    nu = sum(o.pop("n_unres", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
+    # Exact counters, not estimates: nf = positions where the two top-k sets were DISJOINT,
+    # nu = positions where the overlap was non-empty but the chosen surface form could not be
+    # resolved to a token id. Reported separately because they are different events; nu
+    # should be ~0 given the resolver validation, and printing it makes that checkable
+    # instead of assumed.
     print(f"  [api_tilt rule=overlap pick={pick_mode} beta={beta:g} fb={fb_mode}] {nt} tokens, "
-          f"{nf} from the empty-overlap fallback ({100*nf/max(nt,1):.1f}%)"
+          f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
+          f"({100*nu/max(nt,1):.2f}%)"
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     return out
