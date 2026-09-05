@@ -1,5 +1,53 @@
 # Experiment queue
 
+## !!! CORRECTION (05-09 06:10): capture fraction was the WRONG metric; use the band
+
+All the capture fractions in this file ignore the plausibility constraint -- they score a
+presence gain as good regardless of what it cost. Re-ran the cells under the PAPER'S
+selection convention (selection5.py): per scenario pick the transcript maximising
+`(1-w)*prob + w*presence`, sweep w, report the best presence whose probability still clears
+a one-sided floor at `anchor - 3pp`, where the anchor is the b=0 TARGET-ONLY point of the
+same cell (now printed as a reference row).
+
+The ranking REVERSES. DeepSeek self_harm, 5 rounds, floor 69.36%:
+
+    arm                 rds     r1   selected   @ prob   status
+    b=0 target only       1   17.3      17.3   72.36%   reference
+    overlap comb b=1      5   26.0      67.3   69.62%   IN BAND  <- best
+    overlap comb b=2      1   48.0      48.0   66.96%   misses by 2.40pp
+    overlap elic-pick     5   81.3      52.7   61.68%   misses by 7.68pp
+    b2=1 elicited only    5  100.0     100.0   56.13%   misses by 13.23pp
+
+comb b=1 wins, NOT elic-pick. elic-pick's headline 81.3 sits at 56.46% and blows through
+the constraint; forced back inside reach it manages only 52.7.
+
+### Best IN-BAND arm per cell (only DeepSeek self_harm has 5-round depth)
+
+    cell                  b=0 reference     best in-band            gain
+    self-harm/DeepSeek   17.3 @ 72.36%   comb b=1  67.3 @ 69.62%   +50.0  (5 rounds)
+    self-harm/GLM        10.0 @ 70.60%   comb b=2  15.3 @ 70.21%    +5.3
+    self-harm/gpt-oss    17.3 @ 78.79%   none beat vanilla            --
+    goblin/DeepSeek      10.0 @ 71.96%   comb b=1  14.0 @ 76.21%    +4.0
+    goblin/GLM           10.0 @ 70.32%   elic-pick 12.0 @ 72.91%    +2.0
+    goblin/gpt-oss       10.0 @ 81.85%   none                         --
+    self-pres/DeepSeek   34.7 @ 68.48%   comb b=1  47.3 @ 65.49%   +12.6
+    self-pres/GLM        19.3 @ 63.50%   elic-pick 58.0 @ 61.67%   +38.7
+    self-pres/gpt-oss    30.0 @ 83.12%   none beat vanilla            --
+
+  * ROUNDS ARE THE STORY. 26.0 -> 67.3 on DeepSeek self_harm comb b=1 at unchanged
+    plausibility. Every other cell is stuck at 1 round -- getting them to 5 is now the
+    highest-value queued work, ahead of any new arm.
+  * elic-pick clears the band in only 2 of 9 cells. Where it does (GLM self-pres) it wins
+    big. It is NOT the general default claimed earlier.
+  * gpt-oss: nothing in-band beats plain vanilla on any behaviour. That conclusion survives.
+
+## QUEUED (blocked on billing -- gate every relaunch on apigate.sh)
+  - [ ] 5 rounds for the 8 cells still at 1 round, comb b=1 and comb b=2 first
+        (they are the in-band arms; elic-pick is out of band almost everywhere)
+  - [ ] elicited-only 5 rounds, gpt-oss self_harm + GLM goblin (matched controls)
+  - [ ] re-run GLM goblin elic-pick 5 rounds
+
+
 ## FREE SELECTOR built while blocked (05:05) -- refines the convergence headline
 
 No API needed: gen_token_probs and gen_token_probs_jail are already persisted per assistant
