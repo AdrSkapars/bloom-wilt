@@ -27,6 +27,11 @@ ARMS = [
     ("api_overlap_combined_15s",    "overlap comb b=1"),
     ("api_overlap_combined_b2_15s", "overlap comb b=2"),
     ("api_overlap_elicited_15s",    "overlap elic-pick"),
+    # Empty-overlap fallback resolved from the ELICITED side instead of the target. Fires
+    # on well under 1% of tokens, and on goblin it is worth more than every other lever.
+    ("api_overlap_combined_fbjail_sample_15s", "comb b=1 fb=jailsamp"),
+    ("api_overlap_elicited_fbjail_sample_15s", "elic-pick fb=jailsamp"),
+    ("api_overlap_elicited_fbjail_argmax_15s", "elic-pick fb=jailargmax"),
     ("api_elicited_15s",            "b2=1 elicited only"),
 ]
 
@@ -86,7 +91,7 @@ def run(cell, max_rounds):
     print(f"### {cell}    cap {max_rounds} round(s)")
     print(f"    anchor = b=0 target only: presence {a_sc:.1f} @ {a_pr:.2f}%   "
           f"band floor {floor:.2f}%")
-    print(f"    {'arm':20s} {'rds':>3s} {'r1':>6s} {'selected':>9s} {'@ prob':>8s}  status")
+    print(f"    {'arm':24s} {'rds':>3s} {'r1':>6s} {'selected':>9s} {'@ prob':>8s}  status")
     for folder, label in ARMS:
         rows = load(cell, folder, max_rounds)
         if not rows:
@@ -104,7 +109,7 @@ def run(cell, max_rounds):
             hi = max(p for p, _ in pts)
             best_p, best_s = hi, max(s for p, s in pts if p == hi)
             status = f"misses band by {floor - hi:.2f} pp"
-        print(f"    {label:20s} {nr:3d} {r1:6.1f} {best_s:9.1f} {best_p:7.2f}%  {status}")
+        print(f"    {label:24s} {nr:3d} {r1:6.1f} {best_s:9.1f} {best_p:7.2f}%  {status}")
     print()
 
 
