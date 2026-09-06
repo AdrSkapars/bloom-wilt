@@ -221,6 +221,7 @@ cfg = DotDict({
         "fb_floor": 0.0,                          # jail_maxtarget / jail_resample: minimum TARGET probability (percent) an elicited candidate must reach to be emitted. 0 disables. Override with BLOOM_API_FB_FLOOR.
         "fb_tries": 5,                            # jail_resample: max draws from the elicited distribution (sampled WITHOUT replacement via logit_bias) before keeping the most target-plausible of them. Override with BLOOM_API_FB_TRIES.
         "stage2": "empty",                        # when to hand a position from stage 1 (pick from the top-k intersection / mixture) to stage 2 (draw from the elicited context, floor-check against the target). "empty" = only when stage 1 has no candidate; "disagree" = with probability q, the share of the ELICITED top-k mass on tokens the overlap cannot deliver (q=1 exactly when the overlap is empty, so "empty" is its boundary case). Override with BLOOM_API_STAGE2.
+        "stage2_temp": 1.0,                       # stage2=disagree only: sharpening exponent on the trigger, P(stage 2) = q ** (1/stage2_temp). 1.0 is the plain rate; T -> 0 recovers stage2="empty" (q = 1 only when the overlap is empty), so T sweeps continuously between the two. Override with BLOOM_API_STAGE2_TEMP.
         "mix_temp": 1.0,                          # pick=mix_sample only: sharpening temperature for the mixture draw, which samples proportional to score**(1/mix_temp). 1.0 is the plain draw; ->0 converges on pick=mix. The plain draw is a coin flip wherever the two contexts disagree, so it emits far more low-target-probability tokens than the argmax does. Override with BLOOM_API_MIX_TEMP.
         "floor_overlap": False,                   # also apply fb_floor to the OVERLAP set: drop candidates the target rates below it, so a position whose overlap empties becomes a fallback. Free (overlap members are already priced). Without it the overlap path can emit a sub-floor token the fallback floor never sees. Override with BLOOM_API_FLOOR_OVERLAP.
     },
@@ -290,6 +291,7 @@ if __name__ == "__main__":
         ("BLOOM_API_FLOOR_OVERLAP", ("api_jailbroken_output", "floor_overlap"), _envbool),
         ("BLOOM_API_MIX_TEMP",   ("api_jailbroken_output", "mix_temp"),       float), # mix_sample: draw sharpening
         ("BLOOM_API_STAGE2",     ("api_jailbroken_output", "stage2"),         str),   # empty | disagree
+        ("BLOOM_API_STAGE2_TEMP", ("api_jailbroken_output", "stage2_temp"),   float), # disagree: trigger sharpening
         ("BLOOM_API_TOPK",       ("api_jailbroken_output", "top_k"),          int),   # rule=overlap: candidates per position (Fireworks max 5)
         # Own names, not BLOOM_JAIL_*: those stay bound to jailbroken_output, so a launcher
         # cannot half-configure one stream with the other's variables.

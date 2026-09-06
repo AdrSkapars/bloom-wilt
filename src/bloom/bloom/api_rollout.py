@@ -97,6 +97,7 @@ def run_rollout_api(
         "api_floor_overlap": bool(jail_cfg.get("floor_overlap", False)),
         "api_mix_temp": float(jail_cfg.get("mix_temp", 1.0) or 1.0),
         "api_stage2": str(jail_cfg.get("stage2", "empty") or "empty"),
+        "api_stage2_temp": float(jail_cfg.get("stage2_temp", 1.0) or 1.0),
     }
 
     if evaluator_model_id.startswith("local/"):

@@ -708,6 +708,11 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     #               target's residual mass) is deliberate -- the question is whether what the
     #               elicited context wants is reachable, not whether the target is uncertain.
     stage2_mode = str(jail_runtime_cfg.get("api_stage2", "empty") or "empty")
+    # Sharpening exponent on the disagree trigger: P(stage 2) = q ** (1/stage2_temp).
+    # 1.0 is the plain rate. As T -> 0 the probability collapses to 0 for every q < 1 but
+    # stays exactly 1 at q = 1 -- and q = 1 happens precisely when the overlap is empty --
+    # so small T recovers stage2=empty, and T sweeps continuously between the two.
+    stage2_temp = float(jail_runtime_cfg.get("api_stage2_temp", 1.0) or 1.0)
     if stage2_mode not in ("empty", "disagree"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
                            f"(empty | disagree)")
@@ -765,7 +770,11 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
                 _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
                 q_sum += _q
-                _stage2 = (not overlap) if stage2_mode == "empty" else (random.random() < _q)
+                if stage2_mode == "empty":
+                    _stage2 = not overlap
+                else:
+                    _p2 = _q if stage2_temp == 1.0 else _q ** (1.0 / stage2_temp)
+                    _stage2 = random.random() < _p2
                 # z = l_target + beta * l_elicited, over this step's candidates only
                 _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
                 # MIXTURE (pick=mix / mix_sample), in PROBABILITY space over the UNION of the
@@ -1052,6 +1061,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {nov} overlap-floored" if nov else "")
           + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
              if stage2_mode != "empty" else "")
+          + (f" T={stage2_temp:g}" if stage2_mode != "empty" and stage2_temp != 1.0 else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
@@ -1059,7 +1069,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
                   "n_ovfloored": nov, "n_shortcut": nsc, "n_empty": nem,
-                  "stage2": stage2_mode, "mean_q": round(qsm / max(nt, 1), 4),
+                  "stage2": stage2_mode, "stage2_temp": stage2_temp,
+                  "mean_q": round(qsm / max(nt, 1), 4),
                   "n_scenarios": len(out)})
     return out
 
