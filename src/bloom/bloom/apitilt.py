@@ -1045,7 +1045,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # nf = disjoint top-k sets; nu = overlap non-empty but the pick was unresolvable. Separate
     # counters because they are different events, and nu being ~0 should be checkable.
     print(f"  [api_tilt rule=overlap pick={pick_mode} b1={ob1:g} b2={ob2:g} fb={fb_mode}] {nt} tokens, "
-          f"{nf} empty-overlap ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
+          f"{nf} stage-2 ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
