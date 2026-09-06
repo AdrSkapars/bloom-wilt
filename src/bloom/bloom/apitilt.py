@@ -85,6 +85,30 @@ def _clip(text: str) -> str:
     return (text[:cut] if cut >= 0 else text).strip()
 
 
+_FINAL_OPEN = "<|channel|>final<|message|>"
+
+
+def _finalize(res: "_TokenResolver", ids: List[int]) -> str:
+    """The reply to store: for a harmony model, the FINAL channel only.
+
+    _clip alone cannot do this. It searches the decoded text for control markers, but
+    decode() strips them (skip_special_tokens=True), so it found nothing and the analysis
+    channel reached the transcript with its tags erased -- turn 2 was then re-rendered as a
+    final-channel message whose body was CoT plus several concatenated pseudo-turns.
+    Reading the RAW decode instead lets the channel structure be recovered.
+
+    Models without harmony channels (DeepSeek, GLM) have no _FINAL_OPEN in the raw decode
+    and fall through to the previous behaviour unchanged.
+    """
+    raw = res.decode_raw(ids)
+    i = raw.rfind(_FINAL_OPEN)
+    if i < 0:
+        return _clip(res.decode(ids))
+    seg = raw[i + len(_FINAL_OPEN):]
+    cut = min((seg.find(m) for m in _STOP_MARKERS if m in seg), default=-1)
+    return (seg[:cut] if cut >= 0 else seg).strip()
+
+
 class _TokenResolver:
     """Maps a top-k candidate STRING back to its token id.
 
@@ -118,18 +142,36 @@ class _TokenResolver:
         for s in _ambiguous:
             self._by_text.pop(s, None)
         self.n_ambiguous = len(_ambiguous)
-        # EOS differs per model (DeepSeek uses a fullwidth-bar token, GLM uses
-        # <|endoftext|>), so take it from the vocab rather than assuming one.
+        # A single eos id is not enough: several models end an assistant turn on a token
+        # that is NOT their vocab-level EOS, and picking the wrong one is silent -- the loop
+        # simply never stops and runs to max_tokens.
+        #   gpt-oss  eos resolved to <|endoftext|> (199999), which a chat turn never emits;
+        #            the real enders are <|return|> and <|call|>. Measured consequence: 45/45
+        #            replies at the 250-token cap and 44/45 carrying the model's analysis
+        #            channel into the stored turn, against 0/45 for the same cell's vanilla.
+        #   GLM      eos resolves to <|endoftext|> but turns end on <|user|>/<|observation|>.
+        # <|end|> is deliberately NOT a stop for gpt-oss: it closes the analysis channel
+        # mid-reply, and gpt_oss_chat.jinja says so outright ("<|return|> indicates the end
+        # of generation, but <|end|> does not"). Stopping there would keep only the CoT.
         _v = self._tok.get_vocab()
+        _stop_names = ("<｜end▁of▁sentence｜>", "<|endoftext|>", "<|return|>", "<|call|>",
+                       "<|im_end|>", "<|eot_id|>", "</s>", "<|user|>", "<|observation|>")
+        self.stop_ids = {_v[k] for k in _stop_names if k in _v}
         self.eos_id = next((_v[k] for k in ("<｜end▁of▁sentence｜>",
                                             "<|endoftext|>", "<|return|>", "<|im_end|>", "</s>")
                             if k in _v), 1)
+        if not self.stop_ids:
+            self.stop_ids = {self.eos_id}
 
     def id_of(self, text: str) -> Optional[int]:
         return self._by_text.get(text)
 
     def decode(self, ids: List[int]) -> str:
         return self._tok.decode(list(ids), skip_special_tokens=True)
+
+    def decode_raw(self, ids: List[int]) -> str:
+        """Decode KEEPING control tokens, so channel structure can be read."""
+        return self._tok.decode(list(ids), skip_special_tokens=False)
 
 
 def _wsample(items, key):
@@ -599,7 +641,7 @@ def _driven_sample_floor(handle: Dict, jail_runtime_cfg: Dict,
                     break
             else:
                 tid, t_lp, j_lp = bid, bt, blp
-            if tid is None or tid == res.eos_id:
+            if tid is None or tid in res.stop_ids:
                 break
             gen.append(tid)
             t_lps.append(t_lp if t_lp is not None else float("nan"))
@@ -607,7 +649,7 @@ def _driven_sample_floor(handle: Dict, jail_runtime_cfg: Dict,
             t_ids = t_ids + [tid]
             j_ids = j_ids + [tid]
 
-        return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
+        return {"best_text": _finalize(res, gen), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": 0, "n_unres": 0, "n_floored": n_floored,
@@ -627,6 +669,14 @@ def _driven_sample_floor(handle: Dict, jail_runtime_cfg: Dict,
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
+    # A driven loop that never recognises its stop token is otherwise SILENT: it completes,
+    # returns numbers, and looks plausible. Saturating the cap is the tell.
+    ncap = sum(1 for o in out if len(o["best_ids"]) >= int(max_tokens))
+    if ncap * 2 >= len(out):
+        print(f"  [api_tilt WARNING] {ncap}/{len(out)} scenarios ended at max_tokens="
+              f"{int(max_tokens)} -- the stop token is probably not being recognised for "
+              f"this model; check _TokenResolver.stop_ids against its chat template.",
+              flush=True)
     print(f"  [api_tilt rule=sample_floor floor={fb_floor:g} tries={fb_tries}] {nt} tokens, "
           f"{nrs} resamples, {nfl} floored ({100*nfl/max(nt,1):.2f}%)"
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
@@ -1077,7 +1127,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     else:                # target_sample, or an unresolvable surface form
                         tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
                         j_lp = jmap.get(tr["sampled_str"])
-                if tid is None or tid == res.eos_id:
+                if tid is None or tid in res.stop_ids:
                     break
                 gen.append(tid)
                 t_lps.append(t_lp if t_lp is not None else float("nan"))
@@ -1103,7 +1153,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     f"{len(t_lps)} generated tokens; cannot fill the target probabilities.")
             t_lps = list(exact)
 
-        return {"best_text": _clip(res.decode(gen)), "best_ids": gen,
+        return {"best_text": _finalize(res, gen), "best_ids": gen,
                 "best_token_probs": [math.exp(l) * 100 for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
