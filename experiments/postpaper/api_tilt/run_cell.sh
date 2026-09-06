@@ -116,9 +116,13 @@ case "$ARM" in
     if [ "$S2" = "empty" ]; then S2SUF=""; else S2SUF="_s2${S2}"; export BLOOM_API_STAGE2=$S2; fi
     ST="${BLOOM_API_STAGE2_TEMP:-1}"
     if [ "$ST" != "1" ]; then S2SUF="${S2SUF}_st${ST}"; export BLOOM_API_STAGE2_TEMP=$ST; fi
+    MS="${BLOOM_API_MIX_SET:-union}"
+    if [ "$MS" = "union" ]; then MSSUF=""; else MSSUF="_ms${MS}"; export BLOOM_API_MIX_SET=$MS; fi
+    MFL="${BLOOM_API_MIX_FLOOR:-0}"
+    if [ "$MFL" = "0" ]; then MFSUF=""; else MFSUF="_mfl${MFL}"; export BLOOM_API_MIX_FLOOR=$MFL; fi
     MT="${BLOOM_API_MIX_TEMP:-1}"
     if [ "$MT" = "1" ]; then MSUF=""; else MSUF="_mt${MT}"; export BLOOM_API_MIX_TEMP=$MT; fi
-    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}${MSUF}${S2SUF}_15s
+    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}${MSUF}${MSSUF}${MFSUF}${S2SUF}_15s
     export BLOOM_API_RULE=overlap ;;
   samplefloor)
     # rule=sample_floor: elicited draw + target floor at EVERY position, no top-k intersection

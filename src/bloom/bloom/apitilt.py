@@ -713,6 +713,25 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # stays exactly 1 at q = 1 -- and q = 1 happens precisely when the overlap is empty --
     # so small T recovers stage2=empty, and T sweeps continuously between the two.
     stage2_temp = float(jail_runtime_cfg.get("api_stage2_temp", 1.0) or 1.0)
+    # STAGE-1 FLOOR for the mixture. The union scores a token the target did not propose as
+    # b1*0 + b2*p_e, so it cannot tell a token the target rates 1e-3 from one it rates 1e-12
+    # -- both score identically. Measured: the mix arms' worst tokens are all elicited-only
+    # picks at 1e-10..1e-08 % with the elicited context 56-93% confident, while the
+    # intersection arms never go below ~1e-04 % because every candidate is in the target's
+    # top-k. Two ways to close that:
+    #   mix_set=target -- drop elicited-only candidates entirely, scoring t + e over the
+    #                     target's top-k. Free, and the floor comes with the set. Still
+    #                     reduces to greedy vanilla at b2=0, unlike the intersection rule.
+    #   mix_set=union  -- keep the reach, but verify the winner. A token outside the target's
+    #                     top-k obeys t(x) <= min_T(t), so when the target's own k-th best is
+    #                     already under the floor EVERY elicited-only candidate is too and
+    #                     they go for free; only when that bound clears the floor is a
+    #                     cand_logprob call needed. Failing candidates are dropped and the
+    #                     argmax retaken.
+    mix_set = str(jail_runtime_cfg.get("api_mix_set", "union") or "union")
+    if mix_set not in ("union", "target"):
+        raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown (union | target)")
+    mix_floor = float(jail_runtime_cfg.get("api_mix_floor", 0.0) or 0.0)
     if stage2_mode not in ("empty", "disagree"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
                            f"(empty | disagree)")
@@ -738,6 +757,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         n_ovfloored = 0
         n_shortcut = 0
         n_empty = 0
+        n_mixdrop = 0        # candidates removed by the stage-1 floor
+        n_mixcalls = 0       # cand_logprob calls the free bound could not avoid
         q_sum = 0.0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
@@ -789,12 +810,57 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 for _t, _lp in jr["top"]:
                     _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
                 _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
-                if overlap and not _stage2 and pick_mode in ("mix", "mix_sample") and _mix:
+                if pick_mode in ("mix", "mix_sample") and (mix_set == "target" or mix_floor > 0.0):
+                    _tmin = min(math.exp(v) for v in tmap.values()) * 100.0 if tmap else 0.0
+                    # Free rejection of every elicited-only candidate: either we are not
+                    # allowing them at all, or the target's own k-th best already fails the
+                    # floor, which upper-bounds all of them.
+                    _drop_all_e = (mix_set == "target") or (mix_floor > 0.0 and _tmin < mix_floor)
+                    _keep = []
+                    for _t, _w in _mix:
+                        if _t in tmap:
+                            if mix_floor > 0.0 and math.exp(tmap[_t]) * 100.0 < mix_floor:
+                                n_mixdrop += 1
+                                continue
+                            _keep.append((_t, _w))
+                        elif not _drop_all_e:
+                            _keep.append((_t, _w))     # unknown t(x); verified at pick time
+                        else:
+                            n_mixdrop += 1
+                    _mix = _keep
+                # Resolve the mixture argmax BEFORE the dispatch, so that a candidate list
+                # emptied by the floor routes to stage 2 rather than falling through with a
+                # stale pick.
+                _mixpick = None
+                if pick_mode == "mix" and _mix:
+                    _mixpick = max(_mix, key=lambda x: x[1])[0]
+                    # Only reachable with mix_set=union and a floor the free bound could not
+                    # settle: price the winner, drop it if it fails, retake the argmax.
+                    while mix_floor > 0.0 and _mixpick is not None and _mixpick not in tmap:
+                        _pid = res.id_of(_mixpick)
+                        _ok = False
+                        if _pid is not None:
+                            try:
+                                n_mixcalls += 1
+                                _ok = math.exp(client.cand_logprob(t_ids, _pid)) * 100.0 >= mix_floor
+                            except RuntimeError as e:
+                                truncated = str(e)
+                                break
+                        if _ok:
+                            break
+                        n_mixdrop += 1
+                        _mix = [x for x in _mix if x[0] != _mixpick]
+                        _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
+                if truncated:
+                    break
+                if (overlap and not _stage2 and _mix
+                        and (pick_mode == "mix_sample"
+                             or (pick_mode == "mix" and _mixpick is not None))):
                     # Union candidate set, but ONLY where the two top-k sets actually
                     # intersect. An empty overlap still routes to the fallback below, so the
                     # elicited resample + floor keeps carrying the disjoint positions.
                     if pick_mode == "mix":
-                        pick = max(_mix, key=lambda x: x[1])[0]
+                        pick = _mixpick
                     else:
                         if mix_temp != 1.0:
                             # Renormalise to the largest weight before the power so a
@@ -1031,6 +1097,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "n_floored": n_floored, "n_resamples": n_resamples,
                 "n_ovfloored": n_ovfloored, "n_shortcut": n_shortcut,
                 "n_empty": n_empty, "q_sum": q_sum,
+                "n_mixdrop": n_mixdrop, "n_mixcalls": n_mixcalls,
                 "truncated": truncated}
 
     _t0 = time.time()
@@ -1048,6 +1115,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nsc = sum(o.pop("n_shortcut", 0) for o in out)
     nem = sum(o.pop("n_empty", 0) for o in out)
     qsm = sum(o.pop("q_sum", 0.0) for o in out)
+    nmd = sum(o.pop("n_mixdrop", 0) for o in out)
+    nmc = sum(o.pop("n_mixcalls", 0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -1059,6 +1128,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
           + (f", {nov} overlap-floored" if nov else "")
+          + (f", mix_set={mix_set} floor={mix_floor:g} ({nmd} dropped, {nmc} priced)"
+             if (mix_set != "union" or mix_floor > 0.0) else "")
           + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
              if stage2_mode != "empty" else "")
           + (f" T={stage2_temp:g}" if stage2_mode != "empty" and stage2_temp != 1.0 else "")
@@ -1069,6 +1140,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
                   "n_ovfloored": nov, "n_shortcut": nsc, "n_empty": nem,
+                  "mix_set": mix_set, "mix_floor": mix_floor,
+                  "n_mixdrop": nmd, "n_mixcalls": nmc,
                   "stage2": stage2_mode, "stage2_temp": stage2_temp,
                   "mean_q": round(qsm / max(nt, 1), 4),
                   "n_scenarios": len(out)})
