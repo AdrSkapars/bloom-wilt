@@ -732,9 +732,20 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     if mix_set not in ("union", "target"):
         raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown (union | target)")
     mix_floor = float(jail_runtime_cfg.get("api_mix_floor", 0.0) or 0.0)
-    if stage2_mode not in ("empty", "disagree"):
+    #   never    -- stage 2 is switched off entirely. An empty overlap no longer routes
+    #                anywhere: the mixture just scores the UNION and takes its argmax, which
+    #                is always non-empty because the target's own top-k is in it. Isolates
+    #                the union rule from the elicited resample, so the two mechanisms that
+    #                have been carrying these arms together can be told apart. Only
+    #                meaningful for the mixture -- every other pick mode has the overlap AS
+    #                its candidate set and would have nothing to choose from.
+    if stage2_mode not in ("empty", "disagree", "never"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
-                           f"(empty | disagree)")
+                           f"(empty | disagree | never)")
+    if stage2_mode == "never" and pick_mode not in ("mix", "mix_sample"):
+        raise RuntimeError(f"api_jailbroken_output.stage2='never' needs pick=mix or "
+                           f"mix_sample; pick={pick_mode!r} uses the overlap as its "
+                           f"candidate set and would be empty with no fallback")
     _floor_lp = math.log(fb_floor / 100.0) if fb_floor > 0.0 else None
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
@@ -791,7 +802,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
                 _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
                 q_sum += _q
-                if stage2_mode == "empty":
+                if stage2_mode == "never":
+                    _stage2 = False
+                elif stage2_mode == "empty":
                     _stage2 = not overlap
                 else:
                     _p2 = _q if stage2_temp == 1.0 else _q ** (1.0 / stage2_temp)
@@ -853,7 +866,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
                 if truncated:
                     break
-                if (overlap and not _stage2 and _mix
+                if ((overlap or stage2_mode == "never") and not _stage2 and _mix
                         and (pick_mode == "mix_sample"
                              or (pick_mode == "mix" and _mixpick is not None))):
                     # Union candidate set, but ONLY where the two top-k sets actually
