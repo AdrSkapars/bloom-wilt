@@ -1,0 +1,1 @@
+{"t": 1788702684.4619725, "tag": "overlap:combined:jail_resample", "calls": 4423, "retries": 0, "prompt_tok": 619868, "gen_tok": 3511, "secs": 331.79, "gen_tokens": 1394, "n_fallback": 236, "n_unres": 0, "n_floored": 29, "n_resamples": 640, "n_ovfloored": 0, "n_shortcut": 24, "n_empty": 55, "stage2": "disagree", "stage2_temp": 1.0, "mean_q": 0.1737, "n_scenarios": 15}
