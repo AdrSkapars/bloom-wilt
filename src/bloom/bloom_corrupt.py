@@ -220,6 +220,7 @@ cfg = DotDict({
         "fallback": "target_sample",              # what to emit when the two top-k sets are DISJOINT (~1-3% of positions, and where the behaviour actually lives). target_sample | top5_argmax | top5_random | top5_weighted resolve it from the TARGET; jail_sample | jail_argmax | jail_maxtarget | jail_resample resolve it from the ELICITED side. Override with BLOOM_API_FALLBACK.
         "fb_floor": 0.0,                          # jail_maxtarget / jail_resample: minimum TARGET probability (percent) an elicited candidate must reach to be emitted. 0 disables. Override with BLOOM_API_FB_FLOOR.
         "fb_tries": 5,                            # jail_resample: max draws from the elicited distribution (sampled WITHOUT replacement via logit_bias) before keeping the most target-plausible of them. Override with BLOOM_API_FB_TRIES.
+        "mix_temp": 1.0,                          # pick=mix_sample only: sharpening temperature for the mixture draw, which samples proportional to score**(1/mix_temp). 1.0 is the plain draw; ->0 converges on pick=mix. The plain draw is a coin flip wherever the two contexts disagree, so it emits far more low-target-probability tokens than the argmax does. Override with BLOOM_API_MIX_TEMP.
         "floor_overlap": False,                   # also apply fb_floor to the OVERLAP set: drop candidates the target rates below it, so a position whose overlap empties becomes a fallback. Free (overlap members are already priced). Without it the overlap path can emit a sub-floor token the fallback floor never sees. Override with BLOOM_API_FLOOR_OVERLAP.
     },
     "tokbias_output": {                           # static logit-bias baseline (z = target + lambda*bias over the whole vocab) — a separate elicitation method from jail. Numeric knobs here; the prompt content (prompt / neg_prompt / words) lives in the behaviour yaml (tokbias_output_prompt / _neg_prompt / _words). Every field overridable via BLOOM_TOKBIAS_*.
@@ -286,6 +287,7 @@ if __name__ == "__main__":
         ("BLOOM_API_FB_FLOOR",   ("api_jailbroken_output", "fb_floor"),     float),  # jail_maxtarget/jail_resample: min target prob (percent) for an emitted fallback token
         ("BLOOM_API_FB_TRIES",   ("api_jailbroken_output", "fb_tries"),       int),   # jail_resample: max elicited draws
         ("BLOOM_API_FLOOR_OVERLAP", ("api_jailbroken_output", "floor_overlap"), _envbool),
+        ("BLOOM_API_MIX_TEMP",   ("api_jailbroken_output", "mix_temp"),       float), # mix_sample: draw sharpening
         ("BLOOM_API_TOPK",       ("api_jailbroken_output", "top_k"),          int),   # rule=overlap: candidates per position (Fireworks max 5)
         # Own names, not BLOOM_JAIL_*: those stay bound to jailbroken_output, so a launcher
         # cannot half-configure one stream with the other's variables.

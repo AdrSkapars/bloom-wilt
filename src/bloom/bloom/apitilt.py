@@ -692,6 +692,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # overlap path can emit a sub-floor token the fallback floor never sees.
     fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
     floor_overlap = bool(jail_runtime_cfg.get("api_floor_overlap", False))
+    # Sharpening temperature for pick=mix_sample: draw proportional to w**(1/mix_temp).
+    # 1.0 is the plain mixture draw; ->0 converges on pick=mix. The plain draw is a coin
+    # flip at every position where the two contexts disagree (at b2=1 the loser still wins
+    # ~half the time), which is why sampling tripled the share of tokens the target rates
+    # under 10% while argmax did not. Sharpening keeps a draw but breaks the tie decisively.
+    mix_temp = float(jail_runtime_cfg.get("api_mix_temp", 1.0) or 1.0)
     _floor_lp = math.log(fb_floor / 100.0) if fb_floor > 0.0 else None
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
@@ -757,10 +763,18 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     if pick_mode == "mix":
                         pick = max(_mix, key=lambda x: x[1])[0]
                     else:
-                        _tot = sum(w for _, w in _mix) or 1.0
+                        if mix_temp != 1.0:
+                            # Renormalise to the largest weight before the power so a
+                            # small temperature cannot underflow every candidate to 0.
+                            _wmax = max(w for _, w in _mix) or 1.0
+                            _e = 1.0 / mix_temp
+                            _draw = [(t, (w / _wmax) ** _e) for t, w in _mix]
+                        else:
+                            _draw = _mix
+                        _tot = sum(w for _, w in _draw) or 1.0
                         _r, _acc = random.random() * _tot, 0.0
-                        pick = _mix[-1][0]
-                        for _t, _w in _mix:
+                        pick = _draw[-1][0]
+                        for _t, _w in _draw:
                             _acc += _w
                             if _r <= _acc:
                                 pick = _t

@@ -112,7 +112,9 @@ case "$ARM" in
     FL="${BLOOM_API_FB_FLOOR:-0}"
     if [ "$FL" = "0" ]; then LSUF=""; else LSUF="_fl${FL}"; export BLOOM_API_FB_FLOOR=$FL; fi
     if [ "${BLOOM_API_FLOOR_OVERLAP:-0}" = "1" ]; then OSUF="_ov"; else OSUF=""; fi
-    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}_15s
+    MT="${BLOOM_API_MIX_TEMP:-1}"
+    if [ "$MT" = "1" ]; then MSUF=""; else MSUF="_mt${MT}"; export BLOOM_API_MIX_TEMP=$MT; fi
+    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}${MSUF}_15s
     export BLOOM_API_RULE=overlap ;;
   samplefloor)
     # rule=sample_floor: elicited draw + target floor at EVERY position, no top-k intersection
