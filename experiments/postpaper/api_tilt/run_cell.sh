@@ -135,6 +135,11 @@ case "$ARM" in
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap|samplefloor] [rounds]"; exit 2 ;;
 esac
 
+# RUN_TAG appends a suffix to the folder so an identical config can be repeated
+# without the round-level resume treating it as already done. Same seed, so the
+# scenario bank and opening turns are shared and the repeat isolates run-to-run
+# non-determinism in the hosted model.
+if [ -n "${RUN_TAG:-}" ]; then export BLOOM_FOLDER="${BLOOM_FOLDER%_15s}_${RUN_TAG}_15s"; fi
 echo "=== beh=$BEH model=$MODEL arm=$ARM rounds=$ROUNDS scen=$SCEN seed=$SEED"
 echo "=== folder=$BLOOM_FOLDER"
 python src/bloom/bloom_corrupt.py
