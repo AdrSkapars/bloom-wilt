@@ -698,6 +698,19 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # ~half the time), which is why sampling tripled the share of tokens the target rates
     # under 10% while argmax did not. Sharpening keeps a draw but breaks the tie decisively.
     mix_temp = float(jail_runtime_cfg.get("api_mix_temp", 1.0) or 1.0)
+    # STAGE-2 TRIGGER. Stage 1 picks from the top-k intersection (or the mixture over the
+    # union); stage 2 draws from the elicited context and floor-checks it against the target.
+    #   empty    -- escalate only when stage 1 has no candidate at all (~1-3% of positions).
+    #   disagree -- escalate with probability q, the share of the ELICITED context's own top-k
+    #               mass sitting on tokens the overlap cannot deliver. Soft version of the
+    #               same idea: q = 1 exactly when the overlap is empty, so `empty` is its
+    #               boundary case and nothing regresses. Keying on the elicited side (not the
+    #               target's residual mass) is deliberate -- the question is whether what the
+    #               elicited context wants is reachable, not whether the target is uncertain.
+    stage2_mode = str(jail_runtime_cfg.get("api_stage2", "empty") or "empty")
+    if stage2_mode not in ("empty", "disagree"):
+        raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
+                           f"(empty | disagree)")
     _floor_lp = math.log(fb_floor / 100.0) if fb_floor > 0.0 else None
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
@@ -719,6 +732,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         n_resamples = 0
         n_ovfloored = 0
         n_shortcut = 0
+        n_empty = 0
+        q_sum = 0.0
         truncated = ""
         with ThreadPoolExecutor(max_workers=2) as ex:
             for _ in range(int(max_tokens)):
@@ -742,6 +757,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     _kept = [x for x in overlap if tmap[x[0]] >= _floor_lp]
                     n_ovfloored += len(overlap) - len(_kept)
                     overlap = _kept
+                if not overlap:
+                    n_empty += 1
+                # Disagreement share of the elicited top-k. Empty overlap => q = 1, which is
+                # why `disagree` subsumes `empty` rather than replacing it.
+                _ov = {x[0] for x in overlap}
+                _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
+                _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
+                q_sum += _q
+                _stage2 = (not overlap) if stage2_mode == "empty" else (random.random() < _q)
                 # z = l_target + beta * l_elicited, over this step's candidates only
                 _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
                 # MIXTURE (pick=mix / mix_sample), in PROBABILITY space over the UNION of the
@@ -756,7 +780,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 for _t, _lp in jr["top"]:
                     _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
                 _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
-                if overlap and pick_mode in ("mix", "mix_sample") and _mix:
+                if overlap and not _stage2 and pick_mode in ("mix", "mix_sample") and _mix:
                     # Union candidate set, but ONLY where the two top-k sets actually
                     # intersect. An empty overlap still routes to the fallback below, so the
                     # elicited resample + floor keeps carrying the disjoint positions.
@@ -787,7 +811,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     else:
                         t_lp = tmap.get(pick)          # None if outside the target top-k
                         j_lp = dict(jr["top"]).get(pick)
-                elif overlap:
+                elif overlap and not _stage2:
                     # overlap entries are (token_string, ELICITED logprob); tmap holds the
                     # TARGET logprob for the same strings.
                     if pick_mode in ("elicited", "argmax"):
@@ -997,6 +1021,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
                 "n_ovfloored": n_ovfloored, "n_shortcut": n_shortcut,
+                "n_empty": n_empty, "q_sum": q_sum,
                 "truncated": truncated}
 
     _t0 = time.time()
@@ -1012,6 +1037,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nrs = sum(o.pop("n_resamples", 0) for o in out)
     nov = sum(o.pop("n_ovfloored", 0) for o in out)
     nsc = sum(o.pop("n_shortcut", 0) for o in out)
+    nem = sum(o.pop("n_empty", 0) for o in out)
+    qsm = sum(o.pop("q_sum", 0.0) for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -1023,13 +1050,17 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
           + (f", {nov} overlap-floored" if nov else "")
+          + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
+             if stage2_mode != "empty" else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"overlap:{pick_mode}:{fb_mode}",
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
-                  "n_ovfloored": nov, "n_shortcut": nsc, "n_scenarios": len(out)})
+                  "n_ovfloored": nov, "n_shortcut": nsc, "n_empty": nem,
+                  "stage2": stage2_mode, "mean_q": round(qsm / max(nt, 1), 4),
+                  "n_scenarios": len(out)})
     return out
 
 
