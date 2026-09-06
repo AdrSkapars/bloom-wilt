@@ -54,6 +54,10 @@ def run_rollout_api(
     temperature = cfg.get("temperature", DEFAULT_TEMPERATURE)
     no_think_eval = not cfg.rollout.get("evaluator_thinking", False)
     no_think_target = not cfg.rollout.get("target_thinking", False)
+    # Target-side temperature, separate from the evaluator's. 0 = greedy/argmax decoding.
+    # cfg.temperature is global ("all LLM calls"), so using it here would also flatten the
+    # evaluator's turns and confound a target-decoding comparison.
+    target_temperature = float(cfg.rollout.get("target_temperature", temperature))
     evaluator_model_id = cfg.rollout.model
 
     jail_cfg = cfg.get("api_jailbroken_output", {}) or {}
@@ -281,7 +285,7 @@ def run_rollout_api(
                 break
             jail_results = _jail_generate_api(
                 _jail_hf, jail_runtime_cfg,
-                [sd["target_msgs"] for sd in active], target_max_tokens, temperature, no_think_target,
+                [sd["target_msgs"] for sd in active], target_max_tokens, target_temperature, no_think_target,
             )
             for sd, _jr in zip(active, jail_results):
                 raw_target = _jr["best_text"]

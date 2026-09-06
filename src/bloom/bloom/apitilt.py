@@ -738,7 +738,42 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     overlap = _kept
                 # z = l_target + beta * l_elicited, over this step's candidates only
                 _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
-                if overlap:
+                # MIXTURE (pick=mix / mix_sample), in PROBABILITY space over the UNION of the
+                # two top-k sets: score = b1*p_target + b2*p_elicited, a side that did not
+                # propose the token contributing 0. Unlike the product above it does not need
+                # both contexts to like a token, and because the union always contains the
+                # target's own top-1, b2=0 reduces to greedy vanilla -- the property the
+                # intersection rule cannot have, since the target's argmax is often outside it.
+                _union = {}
+                for _t, _lp in tr["top"]:
+                    _union[_t] = [math.exp(_lp), 0.0]
+                for _t, _lp in jr["top"]:
+                    _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
+                _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
+                if overlap and pick_mode in ("mix", "mix_sample") and _mix:
+                    # Union candidate set, but ONLY where the two top-k sets actually
+                    # intersect. An empty overlap still routes to the fallback below, so the
+                    # elicited resample + floor keeps carrying the disjoint positions.
+                    if pick_mode == "mix":
+                        pick = max(_mix, key=lambda x: x[1])[0]
+                    else:
+                        _tot = sum(w for _, w in _mix) or 1.0
+                        _r, _acc = random.random() * _tot, 0.0
+                        pick = _mix[-1][0]
+                        for _t, _w in _mix:
+                            _acc += _w
+                            if _r <= _acc:
+                                pick = _t
+                                break
+                    tid = res.id_of(pick)
+                    if tid is None:
+                        n_unres += 1
+                        tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                        j_lp = dict(jr["top"]).get(tr["sampled_str"])
+                    else:
+                        t_lp = tmap.get(pick)          # None if outside the target top-k
+                        j_lp = dict(jr["top"]).get(pick)
+                elif overlap:
                     # overlap entries are (token_string, ELICITED logprob); tmap holds the
                     # TARGET logprob for the same strings.
                     if pick_mode in ("elicited", "argmax"):
@@ -773,7 +808,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     else:
                         raise RuntimeError(
                             f"jailbroken_output.api_pick={pick_mode!r} unknown "
-                            f"(elicited | target | combined | random | sample)")
+                            f"(elicited | target | combined | combined_min | combined_sample "
+                            f"| random | sample | mix | mix_sample)")
                     tid = res.id_of(pick)
                     if tid is None:
                         # The overlap was NON-empty; the chosen surface form just could not
@@ -928,7 +964,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         # extra teacher-forced call per turn, and only for these arms.
         # Unconditional, not only when a hole exists: next_topk and echo scoring disagree by
         # ~-0.6pp on the mean, so a transcript mixing both would be measured two ways at once.
-        if fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget", "jail_resample") and gen:
+        if (fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget", "jail_resample")
+                or pick_mode in ("mix", "mix_sample")) and gen:
             # Mandatory, not best-effort: without it the plausibility mean would be taken
             # over only the tokens the target happened to rank highly, which is precisely
             # the bias this arm is being tested for. _prob_summary also cannot consume a

@@ -92,7 +92,10 @@ export BLOOM_API_JAIL_VAR_BATCH="${BLOOM_API_JAIL_VAR_BATCH:-15}"
 ROOT=runs_dsv4/${BEH}/${MODELDIR}
 case "$ARM" in
   vanilla)
-    export BLOOM_FOLDER=${ROOT}/api_vanilla_15s
+    # BLOOM_TARGET_TEMP=0 gives greedy/argmax target decoding; the folder records it.
+    TT="${BLOOM_TARGET_TEMP:-}"
+    if [ -n "$TT" ] && [ "$TT" != "1" ]; then TSUF="_t${TT}"; else TSUF=""; fi
+    export BLOOM_FOLDER=${ROOT}/api_vanilla${TSUF}_15s
     export BLOOM_API_JAIL_ENABLED=0 ;;          # disabled = the un-steered corner
   elicited)
     export BLOOM_FOLDER=${ROOT}/api_elicited_15s

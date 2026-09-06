@@ -294,6 +294,7 @@ if __name__ == "__main__":
         ("BLOOM_API_JAIL_B1",          ("api_jailbroken_output", "b1"),            float),
         ("BLOOM_API_JAIL_B2",          ("api_jailbroken_output", "b2"),            float),
         ("BLOOM_API_JAIL_VAR_BATCH",   ("api_jailbroken_output", "var_batch"),       int),
+        ("BLOOM_TARGET_TEMP",    ("rollout", "target_temperature"),           float),   # target decode only; 0 = greedy. Evaluator keeps cfg.temperature.
         ("BLOOM_JUDGE_MODEL",    ("judgment", "model"),                       str),   # non-'local/' id => hosted API via litellm
         ("BLOOM_JUDGE_THINKING", ("judgment", "thinking"),                    _envbool),
         ("BLOOM_EVAL_MAXTOK",    ("rollout", "evaluator_max_tokens"),         int),   # raise eval cap for hosted-API eval WITH thinking (budget reserved inside max_tokens)
