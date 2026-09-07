@@ -583,7 +583,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # ELICITED side and needs the post-hoc rescore below, since an elicited token is usually
     # outside the target top-k and its logprob is unknown at decode time; target_sample takes
     # the target's own draw, which costs nothing because that call already sampled one.
-    fb_mode = str(jail_runtime_cfg.get("api_fallback", "jail_resample") or "jail_resample")
+    fb_mode = str(jail_runtime_cfg.get("api_fallback", "jail_descend") or "jail_descend")
     if fb_mode not in ("jail_resample", "jail_descend", "target_sample"):
         raise RuntimeError(f"api_jailbroken_output.fallback={fb_mode!r} unknown "
                            f"(jail_resample | jail_descend | target_sample)")
@@ -623,14 +623,14 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     if stage2_mode not in ("threshold", "never"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
                            f"(threshold | never)")
-    stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.99) or 0.99)
+    stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
     # The last two stochastic paths in the decode: an unresolvable surface form, and the
     # revert when nothing the elicited side offers clears the floor. Both otherwise take a
     # DRAW from the target (the latter min_p-constrained). With det_fallback they take the
     # target's top-1 instead, which makes the whole decode a deterministic function of the
     # two contexts' top-k -- the only remaining variation is then the hosted model's own
     # non-determinism in those top-k values.
-    det_fallback = bool(jail_runtime_cfg.get("api_det_fallback", False))
+    det_fallback = bool(jail_runtime_cfg.get("api_det_fallback", True))
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)

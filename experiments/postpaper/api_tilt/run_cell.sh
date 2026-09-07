@@ -103,20 +103,22 @@ case "$ARM" in
     export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
   overlap)
     B2="${BLOOM_API_JAIL_B2:-1}"
-    FL="${BLOOM_API_FLOOR:-1e-06}"
-    TH="${BLOOM_API_STAGE2_THETA:-0.99}"
+    FL="${BLOOM_API_FLOOR:-1e-05}"
+    TH="${BLOOM_API_STAGE2_THETA:-0.95}"
     S2="${BLOOM_API_STAGE2:-threshold}"
     FA="${BLOOM_API_FLOOR_ACTION:-stage2}"
-    FB="${BLOOM_API_FALLBACK:-jail_resample}"
+    FB="${BLOOM_API_FALLBACK:-jail_descend}"
     export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=overlap
     export BLOOM_API_JAIL_B2=$B2 BLOOM_API_FLOOR=$FL BLOOM_API_STAGE2=$S2            BLOOM_API_STAGE2_THETA=$TH BLOOM_API_FLOOR_ACTION=$FA BLOOM_API_FALLBACK=$FB
     if [ "$B2" = "1" ];              then BSUF="";  else BSUF="_b${B2}";   fi
-    if [ "$FL" = "1e-06" ];          then LSUF="";  else LSUF="_fl${FL}";  fi
+    if [ "$FL" = "1e-05" ];          then LSUF="";  else LSUF="_fl${FL}";  fi
     if [ "$S2" = "threshold" ];      then S2SUF=""; else S2SUF="_s2${S2}"; fi
-    if [ "$TH" = "0.99" ];           then THSUF=""; else THSUF="_th${TH}"; fi
+    if [ "$TH" = "0.95" ];           then THSUF=""; else THSUF="_th${TH}"; fi
     if [ "$FA" = "stage2" ];         then ASUF="";  else ASUF="_${FA}";    fi
-    if [ "$FB" = "jail_resample" ];  then FSUF="";  else FSUF="_fb${FB}";  fi
-    if [ "${BLOOM_API_DET_FALLBACK:-0}" = "1" ]; then DSUF="_det"; export BLOOM_API_DET_FALLBACK=1; else DSUF=""; fi
+    if [ "$FB" = "jail_descend" ];   then FSUF="";  else FSUF="_fb${FB}";  fi
+    DET="${BLOOM_API_DET_FALLBACK:-1}"
+    export BLOOM_API_DET_FALLBACK=$DET
+    if [ "$DET" = "1" ]; then DSUF=""; else DSUF="_nodet"; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${DSUF}${PSUF}_15s ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
