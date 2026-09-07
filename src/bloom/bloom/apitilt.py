@@ -799,9 +799,20 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     #                have been carrying these arms together can be told apart. Only
     #                meaningful for the mixture -- every other pick mode has the overlap AS
     #                its candidate set and would have nothing to choose from.
-    if stage2_mode not in ("empty", "disagree", "never"):
+    #   threshold -- DETERMINISTIC: escalate iff q >= stage2_theta. The sampling form
+    #                spreads escalations across every position in proportion to q, so a
+    #                position with q=0.10 still escalates a tenth of the time even though
+    #                stage 1 had a perfectly good candidate there; a threshold spends the
+    #                same budget only where the contexts genuinely disagree. It also spans
+    #                the whole family: theta=1 fires only on q=1, which IS `empty`;
+    #                theta -> 0 approaches always-escalate; theta > 1 is `never`.
+    stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 1.0) or 1.0)
+    if stage2_mode not in ("empty", "disagree", "never", "threshold"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
-                           f"(empty | disagree | never)")
+                           f"(empty | disagree | never | threshold)")
+    if stage2_mode == "threshold" and pick_mode not in ("mix", "mix_sample") and stage2_theta > 1.0:
+        raise RuntimeError("api_jailbroken_output.stage2='threshold' with theta>1 never "
+                           "escalates; only pick=mix/mix_sample can run without stage 2")
     if stage2_mode == "never" and pick_mode not in ("mix", "mix_sample"):
         raise RuntimeError(f"api_jailbroken_output.stage2='never' needs pick=mix or "
                            f"mix_sample; pick={pick_mode!r} uses the overlap as its "
@@ -864,6 +875,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 q_sum += _q
                 if stage2_mode == "never":
                     _stage2 = False
+                elif stage2_mode == "threshold":
+                    _stage2 = _q >= stage2_theta
                 elif stage2_mode == "empty":
                     _stage2 = not overlap
                 else:
@@ -1208,8 +1221,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", mix_set={mix_set} floor={mix_floor:g} ({nmd} dropped, {nmc} priced)"
              if (mix_set != "union" or mix_floor > 0.0) else "")
           + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
-             if stage2_mode != "empty" else "")
-          + (f" T={stage2_temp:g}" if stage2_mode != "empty" and stage2_temp != 1.0 else "")
+             if stage2_mode in ("disagree", "threshold") else "")
+          + (f" T={stage2_temp:g}" if stage2_mode == "disagree" and stage2_temp != 1.0 else "")
+          + (f" theta={stage2_theta:g}" if stage2_mode == "threshold" else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
@@ -1220,6 +1234,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                   "mix_set": mix_set, "mix_floor": mix_floor,
                   "n_mixdrop": nmd, "n_mixcalls": nmc,
                   "stage2": stage2_mode, "stage2_temp": stage2_temp,
+                  "stage2_theta": stage2_theta,
                   "mean_q": round(qsm / max(nt, 1), 4),
                   "n_scenarios": len(out)})
     return out

@@ -114,6 +114,8 @@ case "$ARM" in
     if [ "${BLOOM_API_FLOOR_OVERLAP:-0}" = "1" ]; then OSUF="_ov"; else OSUF=""; fi
     S2="${BLOOM_API_STAGE2:-empty}"
     if [ "$S2" = "empty" ]; then S2SUF=""; else S2SUF="_s2${S2}"; export BLOOM_API_STAGE2=$S2; fi
+    TH="${BLOOM_API_STAGE2_THETA:-1}"
+    if [ "$S2" = "threshold" ]; then S2SUF="${S2SUF}_th${TH}"; export BLOOM_API_STAGE2_THETA=$TH; fi
     ST="${BLOOM_API_STAGE2_TEMP:-1}"
     if [ "$ST" != "1" ]; then S2SUF="${S2SUF}_st${ST}"; export BLOOM_API_STAGE2_TEMP=$ST; fi
     MS="${BLOOM_API_MIX_SET:-union}"
