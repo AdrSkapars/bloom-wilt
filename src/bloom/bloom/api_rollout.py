@@ -101,6 +101,7 @@ def run_rollout_api(
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 1.0) or 1.0),
         "api_mix_set": str(jail_cfg.get("mix_set", "union") or "union"),
         "api_mix_floor": float(jail_cfg.get("mix_floor", 0.0) or 0.0),
+        "api_mix_floor_action": str(jail_cfg.get("mix_floor_action", "repick") or "repick"),
     }
 
     if evaluator_model_id.startswith("local/"):

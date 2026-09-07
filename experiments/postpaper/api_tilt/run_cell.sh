@@ -122,6 +122,8 @@ case "$ARM" in
     if [ "$MS" = "union" ]; then MSSUF=""; else MSSUF="_ms${MS}"; export BLOOM_API_MIX_SET=$MS; fi
     MFL="${BLOOM_API_MIX_FLOOR:-0}"
     if [ "$MFL" = "0" ]; then MFSUF=""; else MFSUF="_mfl${MFL}"; export BLOOM_API_MIX_FLOOR=$MFL; fi
+    MFA="${BLOOM_API_MIX_FLOOR_ACTION:-repick}"
+    if [ "$MFA" != "repick" ]; then MFSUF="${MFSUF}_${MFA}"; export BLOOM_API_MIX_FLOOR_ACTION=$MFA; fi
     MT="${BLOOM_API_MIX_TEMP:-1}"
     if [ "$MT" = "1" ]; then MSUF=""; else MSUF="_mt${MT}"; export BLOOM_API_MIX_TEMP=$MT; fi
     export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}${MSUF}${MSSUF}${MFSUF}${S2SUF}_15s

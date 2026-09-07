@@ -792,6 +792,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown "
                            f"(union | target | elicited)")
     mix_floor = float(jail_runtime_cfg.get("api_mix_floor", 0.0) or 0.0)
+    # What to do when the stage-1 winner is an elicited-only token the target prices below
+    # mix_floor. "repick" drops it and re-argmaxes, staying in stage 1 with the next-best
+    # candidate. "stage2" hands the position to the elicited resample instead, which is the
+    # machinery that already enforces a floor and can search past the top-k -- so a position
+    # stage 1 cannot fill plausibly is escalated rather than filled with a second choice.
+    mix_floor_action = str(jail_runtime_cfg.get("api_mix_floor_action", "repick") or "repick")
+    if mix_floor_action not in ("repick", "stage2"):
+        raise RuntimeError(f"api_jailbroken_output.mix_floor_action={mix_floor_action!r} "
+                           f"unknown (repick | stage2)")
     #   never    -- stage 2 is switched off entirely. An empty overlap no longer routes
     #                anywhere: the mixture just scores the UNION and takes its argmax, which
     #                is always non-empty because the target's own top-k is in it. Isolates
@@ -939,6 +948,11 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         if _ok:
                             break
                         n_mixdrop += 1
+                        if mix_floor_action == "stage2":
+                            # Escalate this position instead of settling for second best.
+                            _stage2 = True
+                            _mixpick = None
+                            break
                         _mix = [x for x in _mix if x[0] != _mixpick]
                         _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
                 if truncated:
