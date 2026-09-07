@@ -624,9 +624,24 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
                            f"(threshold | never)")
     stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.99) or 0.99)
+    # The last two stochastic paths in the decode: an unresolvable surface form, and the
+    # revert when nothing the elicited side offers clears the floor. Both otherwise take a
+    # DRAW from the target (the latter min_p-constrained). With det_fallback they take the
+    # target's top-1 instead, which makes the whole decode a deterministic function of the
+    # two contexts' top-k -- the only remaining variation is then the hosted model's own
+    # non-determinism in those top-k values.
+    det_fallback = bool(jail_runtime_cfg.get("api_det_fallback", False))
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
+
+    def _targ_argmax(tmap, jmap, res):
+        """(id, target_lp, elicited_lp) for the target's top-1, or None if unresolvable."""
+        if not tmap:
+            return None
+        _am = max(tmap, key=tmap.get)
+        _amid = res.id_of(_am)
+        return None if _amid is None else (_amid, tmap[_am], jmap.get(_am))
 
     def _one(job):
         idx, tm = job
@@ -736,8 +751,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     tid = res.id_of(pick)
                     if tid is None:
                         n_unres += 1
-                        tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
-                        j_lp = dict(jr["top"]).get(tr["sampled_str"])
+                        _ta = _targ_argmax(tmap, dict(jr["top"]), res) if det_fallback else None
+                        if _ta is not None:
+                            tid, t_lp, j_lp = _ta
+                        else:
+                            tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
+                            j_lp = dict(jr["top"]).get(tr["sampled_str"])
                     else:
                         t_lp = tmap.get(pick)          # None if outside the target top-k
                         j_lp = dict(jr["top"]).get(pick)
@@ -773,12 +792,16 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                             # The whole elicited top-k is below the floor; fall back to a
                             # floored target draw exactly as the resample does.
                             n_floored += 1
-                            _fs = client.floored_target_sample(
-                                t_ids, top_k, temperature, floor,
-                                math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
-                            tid = _fs["sampled_id"]
-                            _forced_t_lp = tmap.get(_fs["sampled_str"], float("nan"))
-                            _forced_j_lp = jmap.get(_fs["sampled_str"])
+                            _ta = _targ_argmax(tmap, jmap, res) if det_fallback else None
+                            if _ta is not None:
+                                tid, _forced_t_lp, _forced_j_lp = _ta
+                            else:
+                                _fs = client.floored_target_sample(
+                                    t_ids, top_k, temperature, floor,
+                                    math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
+                                tid = _fs["sampled_id"]
+                                _forced_t_lp = tmap.get(_fs["sampled_str"], float("nan"))
+                                _forced_j_lp = jmap.get(_fs["sampled_str"])
                     elif (fb_mode == "jail_resample" and floor > 0.0 and tmap
                             and sum(1 for _lp in tmap.values()
                                     if math.exp(_lp) * 100.0 >= floor) <= 1):

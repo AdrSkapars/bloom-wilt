@@ -116,8 +116,9 @@ case "$ARM" in
     if [ "$TH" = "0.99" ];           then THSUF=""; else THSUF="_th${TH}"; fi
     if [ "$FA" = "stage2" ];         then ASUF="";  else ASUF="_${FA}";    fi
     if [ "$FB" = "jail_resample" ];  then FSUF="";  else FSUF="_fb${FB}";  fi
+    if [ "${BLOOM_API_DET_FALLBACK:-0}" = "1" ]; then DSUF="_det"; export BLOOM_API_DET_FALLBACK=1; else DSUF=""; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
-    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${PSUF}_15s ;;
+    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${DSUF}${PSUF}_15s ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
 

@@ -96,6 +96,7 @@ def run_rollout_api(
         "api_fb_tries": int(jail_cfg.get("fb_tries", 10) or 10),
         "api_stage2": str(jail_cfg.get("stage2", "threshold") or "threshold"),
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.99) or 0.99),
+        "api_det_fallback": bool(jail_cfg.get("det_fallback", False)),
     }
 
     if evaluator_model_id.startswith("local/"):
