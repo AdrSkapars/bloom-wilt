@@ -778,9 +778,19 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     #                     they go for free; only when that bound clears the floor is a
     #                     cand_logprob call needed. Failing candidates are dropped and the
     #                     argmax retaken.
+    #   union    -- T | E, the default: a side that did not propose a token contributes 0.
+    #   target   -- T only, dropping the elicited-only candidates (E \ O). Floors the
+    #               minimum for free and still reduces to greedy vanilla at b2=0.
+    #   elicited -- E only, dropping the target-only candidates (T \ O). The mirror image:
+    #               keeps the mixture's reach into what the elicited context wants but
+    #               removes the target's own favourites when the elicited side ignored them,
+    #               so it does NOT reduce to vanilla at b2=0.
+    # The two restrictions bracket the union; their intersection is the `combined` rule's
+    # candidate set, scored additively rather than as a product.
     mix_set = str(jail_runtime_cfg.get("api_mix_set", "union") or "union")
-    if mix_set not in ("union", "target"):
-        raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown (union | target)")
+    if mix_set not in ("union", "target", "elicited"):
+        raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown "
+                           f"(union | target | elicited)")
     mix_floor = float(jail_runtime_cfg.get("api_mix_floor", 0.0) or 0.0)
     #   never    -- stage 2 is switched off entirely. An empty overlap no longer routes
     #                anywhere: the mixture just scores the UNION and takes its argmax, which
@@ -873,7 +883,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 for _t, _lp in jr["top"]:
                     _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
                 _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
-                if pick_mode in ("mix", "mix_sample") and (mix_set == "target" or mix_floor > 0.0):
+                if pick_mode in ("mix", "mix_sample") and (mix_set != "union" or mix_floor > 0.0):
+                    _eset = {_x for _x, _ in jr["top"]}
                     _tmin = min(math.exp(v) for v in tmap.values()) * 100.0 if tmap else 0.0
                     # Free rejection of every elicited-only candidate: either we are not
                     # allowing them at all, or the target's own k-th best already fails the
@@ -881,6 +892,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     _drop_all_e = (mix_set == "target") or (mix_floor > 0.0 and _tmin < mix_floor)
                     _keep = []
                     for _t, _w in _mix:
+                        if mix_set == "elicited" and _t not in _eset:
+                            n_mixdrop += 1          # target-only candidate, excluded by set
+                            continue
                         if _t in tmap:
                             if mix_floor > 0.0 and math.exp(tmap[_t]) * 100.0 < mix_floor:
                                 n_mixdrop += 1
