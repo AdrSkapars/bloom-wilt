@@ -118,12 +118,13 @@ case "$ARM" in
     if [ "$FB" = "jail_descend" ];   then FSUF="";  else FSUF="_fb${FB}";  fi
     AD="${BLOOM_API_ADAPTIVE:-1}"
     if [ "$AD" = "1" ]; then
-      A0="${BLOOM_API_ALPHA0:-0.5}"; AK="${BLOOM_API_ALPHA_K:-10}"
+      A0="${BLOOM_API_ALPHA0:-0.6}"; AK="${BLOOM_API_ALPHA_K:-10}"
       export BLOOM_API_ADAPTIVE=1 BLOOM_API_ALPHA0=$A0 BLOOM_API_ALPHA_K=$AK
       ADSUF="_a${A0}k${AK}"
     else ADSUF=""; fi
-    ST="${BLOOM_API_SAMPLE_TEMP:-0}"
-    if [ "$ST" = "0" ]; then STSUF=""; else STSUF="_st${ST}"; export BLOOM_API_SAMPLE_TEMP=$ST; fi
+    ST="${BLOOM_API_SAMPLE_TEMP:-0.05}"
+    export BLOOM_API_SAMPLE_TEMP=$ST
+    if [ "$ST" = "0.05" ]; then STSUF=""; else STSUF="_st${ST}"; fi
     TE="${BLOOM_API_TARGET_EVERY:-0}"
     if [ "$TE" = "0" ]; then TESUF=""; else TESUF="_te${TE}"; export BLOOM_API_TARGET_EVERY=$TE; fi
     DET="${BLOOM_API_DET_FALLBACK:-1}"

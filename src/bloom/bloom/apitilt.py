@@ -643,7 +643,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # share of tokens the target rates under 10%, while T<=0.2 recovered most of that. The
     # point of sampling is round-to-round diversity for pools and post-run selection, which
     # a deterministic decode cannot provide.
-    sample_temp = float(jail_runtime_cfg.get("api_sample_temp", 0.0) or 0.0)
+    sample_temp = float(jail_runtime_cfg.get("api_sample_temp", 0.05) or 0.05)
     # ADAPTIVE WEIGHT (adaptive=True). The union score is a convex mixture
     #     score(x) = alpha*p_target(x) + (1-alpha)*p_elicited(x)
     # and alpha is set per position from the measured disagreement q:
@@ -655,7 +655,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # sharply control transfers: large k holds alpha at alpha0 until q approaches 1 (the
     # current threshold behaviour), small k hands over early and in proportion.
     adaptive = bool(jail_runtime_cfg.get("api_adaptive", True))
-    alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.5))
+    alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.6))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"api_jailbroken_output.alpha0={alpha0!r} must be in [0, 1]")

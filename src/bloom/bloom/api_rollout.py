@@ -98,9 +98,9 @@ def run_rollout_api(
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.95) or 0.95),
         "api_det_fallback": bool(jail_cfg.get("det_fallback", True)),
         "api_target_every": int(jail_cfg.get("target_every", 0) or 0),
-        "api_sample_temp": float(jail_cfg.get("sample_temp", 0.0) or 0.0),
+        "api_sample_temp": float(jail_cfg.get("sample_temp", 0.05) or 0.05),
         "api_adaptive": bool(jail_cfg.get("adaptive", True)),
-        "api_alpha0": float(jail_cfg.get("alpha0", 0.5)),
+        "api_alpha0": float(jail_cfg.get("alpha0", 0.6)),
         "api_alpha_k": float(jail_cfg.get("alpha_k", 10.0) or 10.0),
     }
 
