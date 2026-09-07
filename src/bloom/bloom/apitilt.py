@@ -631,6 +631,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # two contexts' top-k -- the only remaining variation is then the hosted model's own
     # non-determinism in those top-k values.
     det_fallback = bool(jail_runtime_cfg.get("api_det_fallback", True))
+    # Duty cycle on the steering: every Nth generated position ignores both stages and
+    # emits the TARGET's top-1, so the reply alternates between steered and greedy tokens.
+    # 0 disables. Greedy vanilla runs at 83.06% arithmetic against the steered arms' 65-71%,
+    # so interleaving trades behaviour for plausibility at a rate set by N -- a coarser
+    # version of spending a plausibility budget, with the spend spread uniformly.
+    target_every = int(jail_runtime_cfg.get("api_target_every", 0) or 0)
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
@@ -659,6 +665,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         n_resamples = 0
         n_shortcut = 0
         n_empty = 0
+        n_greedy = 0         # positions handed to the target argmax by target_every
         n_mixdrop = 0        # candidates removed by the stage-1 floor
         n_mixcalls = 0       # cand_logprob calls the free bound could not avoid
         q_sum = 0.0
@@ -678,6 +685,20 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     truncated = str(e)
                     break
                 tmap = dict(tr["top"])
+                if target_every > 0 and (len(gen) + 1) % target_every == 0 and tmap:
+                    # Greedy position: the target's own top-1, no steering at all.
+                    _am = max(tmap, key=tmap.get)
+                    _amid = res.id_of(_am)
+                    if _amid is not None:
+                        n_greedy += 1
+                        if _amid in res.stop_ids:
+                            break
+                        gen.append(_amid)
+                        t_lps.append(tmap[_am])
+                        j_lps.append(dict(jr["top"]).get(_am, float("nan")))
+                        t_ids = t_ids + [_amid]
+                        j_ids = j_ids + [_amid]
+                        continue
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
                 if not overlap:
                     n_empty += 1
@@ -907,7 +928,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
-                "n_shortcut": n_shortcut,
+                "n_shortcut": n_shortcut, "n_greedy": n_greedy,
                 "n_empty": n_empty, "q_sum": q_sum,
                 "n_mixdrop": n_mixdrop, "n_mixcalls": n_mixcalls,
                 "truncated": truncated}
@@ -924,6 +945,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nfl = sum(o.pop("n_floored", 0) for o in out)
     nrs = sum(o.pop("n_resamples", 0) for o in out)
     nsc = sum(o.pop("n_shortcut", 0) for o in out)
+    ngr = sum(o.pop("n_greedy", 0) for o in out)
     nem = sum(o.pop("n_empty", 0) for o in out)
     qsm = sum(o.pop("q_sum", 0.0) for o in out)
     nmd = sum(o.pop("n_mixdrop", 0) for o in out)
@@ -943,6 +965,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
              if stage2_mode in ("disagree", "threshold") else "")
           + (f" theta={stage2_theta:g}" if stage2_mode == "threshold" else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
+          + (f", {ngr} greedy ({100*ngr/max(nt,1):.1f}%)" if ngr else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"mix:{fb_mode}",

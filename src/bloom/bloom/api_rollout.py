@@ -97,6 +97,7 @@ def run_rollout_api(
         "api_stage2": str(jail_cfg.get("stage2", "threshold") or "threshold"),
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.95) or 0.95),
         "api_det_fallback": bool(jail_cfg.get("det_fallback", True)),
+        "api_target_every": int(jail_cfg.get("target_every", 0) or 0),
     }
 
     if evaluator_model_id.startswith("local/"):
