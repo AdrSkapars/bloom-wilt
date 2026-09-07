@@ -624,6 +624,24 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
                            f"(threshold | never)")
     stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
+    # HOW DISAGREEMENT IS MEASURED. Every schedule alpha(q) is monotone in q, so the shape
+    # only sets how many positions are steered and how hard -- it cannot change WHICH ones.
+    # Only the metric reorders positions, so it is the one structural lever here.
+    #   elicited_outside -- share of the elicited top-k mass on tokens the target did not
+    #                       propose. Blind to rank disagreement INSIDE the overlap: target
+    #                       {A .90, B .05} against elicited {A .05, B .90} scores 0.
+    #   tv               -- total variation between the two top-k distributions, each
+    #                       renormalised over its own top-k. Strict generalisation: still 1
+    #                       when the sets are disjoint, but also fires on the rank flip above.
+    #   margin           -- p_e(elicited top-1) - p_e(target top-1): how much the ELICITED
+    #                       context gains by intervening, rather than how far apart the two
+    #                       distributions are. Near 0 where it is nearly indifferent (steering
+    #                       there spends plausibility for nothing) and near 1 where it wants
+    #                       something the target would never pick.
+    q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
+    if q_metric not in ("elicited_outside", "tv", "margin"):
+        raise RuntimeError(f"api_jailbroken_output.q_metric={q_metric!r} unknown "
+                           f"(elicited_outside | tv | margin)")
     # The last two stochastic paths in the decode: an unresolvable surface form, and the
     # revert when nothing the elicited side offers clears the floor. Both otherwise take a
     # DRAW from the target (the latter min_p-constrained). With det_fallback they take the
@@ -731,7 +749,23 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 # top-k sets are disjoint.
                 _ov = {x[0] for x in overlap}
                 _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
-                _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
+                if q_metric == "elicited_outside":
+                    _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
+                elif q_metric == "tv":
+                    # Each side renormalised over its own top-k so both are proper
+                    # distributions; TV is then in [0,1] and reaches 1 on disjoint sets.
+                    _tt = sum(math.exp(lp) for _, lp in tr["top"]) or 1.0
+                    _pt = {_s: math.exp(lp) / _tt for _s, lp in tr["top"]}
+                    _pe = {_s: math.exp(lp) / _te for _s, lp in jr["top"]}
+                    _q = 0.5 * sum(abs(_pt.get(_s, 0.0) - _pe.get(_s, 0.0))
+                                   for _s in set(_pt) | set(_pe))
+                else:   # margin
+                    # What the ELICITED context gains by getting its way at this position.
+                    _pe = {_s: math.exp(lp) / _te for _s, lp in jr["top"]}
+                    _etop = max(_pe, key=_pe.get) if _pe else None
+                    _ttop = tr["top"][0][0] if tr["top"] else None
+                    _q = max(0.0, (_pe.get(_etop, 0.0) - _pe.get(_ttop, 0.0)) if _etop else 0.0)
+                _q = min(1.0, max(0.0, _q))
                 q_sum += _q
                 # Under the adaptive weight, q=1 already drives alpha to 0 and the argmax
                 # becomes the elicited top-1 among floor-passing candidates -- which is what
@@ -1029,6 +1063,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {ngr} greedy ({100*ngr/max(nt,1):.1f}%)" if ngr else "")
           + (f", adaptive alpha0={alpha0:g} k={alpha_k:g} (mean alpha={asm/max(nt,1):.3f})"
              if adaptive else "")
+          + (f" q={q_metric}" if q_metric != "elicited_outside" else "")
           + (f", sample T={sample_temp:g}" if sample_temp > 0.0 else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)

@@ -116,6 +116,8 @@ case "$ARM" in
     if [ "$TH" = "0.95" ];           then THSUF=""; else THSUF="_th${TH}"; fi
     if [ "$FA" = "stage2" ];         then ASUF="";  else ASUF="_${FA}";    fi
     if [ "$FB" = "jail_descend" ];   then FSUF="";  else FSUF="_fb${FB}";  fi
+    QM="${BLOOM_API_Q_METRIC:-elicited_outside}"
+    if [ "$QM" = "elicited_outside" ]; then QSUF=""; else QSUF="_q${QM}"; export BLOOM_API_Q_METRIC=$QM; fi
     AD="${BLOOM_API_ADAPTIVE:-1}"
     if [ "$AD" = "1" ]; then
       A0="${BLOOM_API_ALPHA0:-0.6}"; AK="${BLOOM_API_ALPHA_K:-10}"
@@ -131,7 +133,7 @@ case "$ARM" in
     export BLOOM_API_DET_FALLBACK=$DET
     if [ "$DET" = "1" ]; then DSUF=""; else DSUF="_nodet"; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
-    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${TESUF}${ADSUF}${STSUF}${DSUF}${PSUF}_15s ;;
+    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${TESUF}${QSUF}${ADSUF}${STSUF}${DSUF}${PSUF}_15s ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
 
