@@ -174,24 +174,7 @@ class _TokenResolver:
         return self._tok.decode(list(ids), skip_special_tokens=False)
 
 
-def _wsample(items, key):
-    """Sample one item with weight proportional to exp(key(item)).
-
-    Shifted by the max before exponentiating: `combined` scores are sums of two logprobs,
-    so exp() of them underflows to zero well inside the range we actually see.
-    """
-    ls = [key(x) for x in items]
-    m = max(ls)
-    w = [math.exp(l - m) for l in ls]
-    tot = sum(w) or 1.0
-    r, acc = random.random() * tot, 0.0
-    for x, wi in zip(items, w):
-        acc += wi
-        if r <= acc:
-            return x
-    return items[-1]
-
-
+# One resolver per tokenizer path, per process.
 _RESOLVER: Dict[str, _TokenResolver] = {}
 
 
@@ -564,129 +547,6 @@ def _record_cost(client, tag: str, extra: Optional[Dict] = None) -> None:
         pass
 
 
-def _driven_sample_floor(handle: Dict, jail_runtime_cfg: Dict,
-                         target_msgs_batch: List[List[Dict]], max_tokens: int,
-                         temperature: float, no_think_target: bool) -> List[Dict]:
-    """[api_tilt rule=sample_floor] Draw from the ELICITED context, keep it if the TARGET
-    prices it above the floor, else redraw without replacement.
-
-    The top-k intersection is gone. `overlap` could only ever emit a token in the target's
-    own top-k, which is why goblin sat at the judge floor until the empty-overlap fallback
-    started conceding those positions -- the behaviour lives precisely where the two contexts
-    disagree. Once an arbitrary token can be priced under the target, the intersection is
-    unnecessary: sample what the elicited context wants, reject only what the target finds
-    impossible.
-
-    Cost is unchanged at ~2 calls/token: one elicited draw plus one target price, where
-    `overlap` spent one top-k call per context. Redraws and the floored revert add to that.
-    """
-    client: ApiTiltTarget = handle["client"]
-    res = _resolver()
-    NO_THINK = handle.get("target_no_think", "")
-    NO_THINK_C = handle.get("corrupt_no_think", "")
-    sys_prompt = jail_runtime_cfg.get("system_prompt", "")
-    prefill = jail_runtime_cfg.get("prefill", "") or ""
-    top_k = int(jail_runtime_cfg.get("api_top_k", 5) or 5)
-    fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
-    fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
-
-    def _one(job):
-        idx, tm = job
-        aff = f"tilt-{os.getpid()}-{idx}"
-        t_prefix = client.render(tm, add_generation_prompt=True) + (NO_THINK if no_think_target else "")
-        conv = [m for m in tm if m.get("role") != "system"]
-        j_msgs = ([{"role": "system", "content": sys_prompt}] + conv) if sys_prompt else conv
-        j_prefix = client.render(j_msgs, add_generation_prompt=True) + NO_THINK_C + prefill
-        t_ids = client.prefix_ids(t_prefix)
-        j_ids = client.prefix_ids(j_prefix)
-
-        gen, t_lps, j_lps = [], [], []
-        n_floored = n_resamples = 0
-        truncated = ""
-        for _ in range(int(max_tokens)):
-            tries = []
-            try:
-                for k in range(fb_tries):
-                    jr = client.next_topk(j_ids, top_k, temperature, aff + "-j",
-                                          exclude_ids=[x[1] for x in tries] or None)
-                    sid, slp = jr["sampled_id"], jr["sampled_lp"]
-                    if sid is None:
-                        break
-                    tlp = client.cand_logprob(t_ids, sid)
-                    tries.append((tlp, sid, slp))
-                    if fb_floor <= 0.0 or math.exp(tlp) * 100.0 >= fb_floor:
-                        break
-            except RuntimeError as e:
-                truncated = str(e)
-                break
-            if not tries:
-                break
-            n_resamples += len(tries) - 1
-            bt, bid, blp = max(tries, key=lambda x: x[0])
-            if fb_floor > 0.0 and math.exp(bt) * 100.0 < fb_floor:
-                # Nothing the elicited context offers clears the floor: take a floored draw
-                # from the target instead, exactly as the overlap rule's fallback does.
-                n_floored += 1
-                try:
-                    tr = client.next_topk(t_ids, top_k, temperature, aff + "-t")
-                    tmap = dict(tr["top"])
-                    fs = client.floored_target_sample(
-                        t_ids, top_k, temperature, fb_floor,
-                        math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
-                    tid = fs["sampled_id"]
-                    t_lp = client.cand_logprob(t_ids, tid) if tid is not None else float("nan")
-                    j_lp = dict(tr["top"]).get(fs["sampled_str"])
-                except RuntimeError as e:
-                    truncated = str(e)
-                    break
-            else:
-                tid, t_lp, j_lp = bid, bt, blp
-            if tid is None or tid in res.stop_ids:
-                break
-            gen.append(tid)
-            t_lps.append(t_lp if t_lp is not None else float("nan"))
-            j_lps.append(j_lp if j_lp is not None else float("nan"))
-            t_ids = t_ids + [tid]
-            j_ids = j_ids + [tid]
-
-        return {"best_text": _finalize(res, gen), "best_ids": gen,
-                "best_token_probs": [math.exp(l) * 100 for l in t_lps],
-                "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
-                "n_fallback": 0, "n_unres": 0, "n_floored": n_floored,
-                "n_resamples": n_resamples, "n_ovfloored": 0, "truncated": truncated}
-
-    _t0 = time.time()
-    jobs = list(enumerate(target_msgs_batch))
-    if len(jobs) == 1:
-        out = [_one(jobs[0])]
-    else:
-        with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
-            out = list(ex.map(_one, jobs))
-    nfl = sum(o.pop("n_floored") for o in out)
-    nrs = sum(o.pop("n_resamples") for o in out)
-    for o in out:
-        o.pop("n_fallback", None); o.pop("n_unres", None); o.pop("n_ovfloored", None)
-    trunc = [o.pop("truncated") for o in out]
-    ncut = sum(1 for x in trunc if x)
-    nt = sum(len(o["best_ids"]) for o in out)
-    # A driven loop that never recognises its stop token is otherwise SILENT: it completes,
-    # returns numbers, and looks plausible. Saturating the cap is the tell.
-    ncap = sum(1 for o in out if len(o["best_ids"]) >= int(max_tokens))
-    if ncap * 2 >= len(out):
-        print(f"  [api_tilt WARNING] {ncap}/{len(out)} scenarios ended at max_tokens="
-              f"{int(max_tokens)} -- the stop token is probably not being recognised for "
-              f"this model; check _TokenResolver.stop_ids against its chat template.",
-              flush=True)
-    print(f"  [api_tilt rule=sample_floor floor={fb_floor:g} tries={fb_tries}] {nt} tokens, "
-          f"{nrs} resamples, {nfl} floored ({100*nfl/max(nt,1):.2f}%)"
-          + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
-             f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
-    _record_cost(client, "sample_floor",
-                 {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
-                  "n_floored": nfl, "n_resamples": nrs, "n_scenarios": len(out)})
-    return out
-
-
 def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     target_msgs_batch: List[List[Dict]], max_tokens: int,
                     temperature: float, no_think_target: bool) -> List[Dict]:
@@ -719,114 +579,51 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     sys_prompt = jail_runtime_cfg.get("system_prompt", "")
     prefill = jail_runtime_cfg.get("prefill", "") or ""
     top_k = int(jail_runtime_cfg.get("api_top_k", 5) or 5)
-    # "argmax" is the rule as specified: the overlap member with the highest elicited
-    # probability. It is deterministic, so every round reproduces the same transcript --
-    # "sample" draws from the overlap in proportion to the elicited probabilities instead,
-    # which keeps round-to-round diversity for pools and post-run selection.
-    pick_mode = str(jail_runtime_cfg.get("api_pick", "elicited") or "elicited")
-    # What to emit when the two top-k sets are DISJOINT (~1-3% of positions, and where the
-    # behaviour lives). target_sample / top5_* resolve from the TARGET; jail_* from the
-    # ELICITED side -- those need the post-hoc rescore below, since an elicited token is
-    # usually outside the target top-k and its logprob is unknown at decode time.
-    fb_mode = str(jail_runtime_cfg.get("api_fallback", "target_sample") or "target_sample")
-    # The overlap score is the tilt's own z = b1*l_target + b2*l_elicited, restricted to the
-    # candidate intersection -- so it takes b1/b2 directly rather than a separate knob.
-    # b1=1,b2=1 is the plain product; b1=0 reduces to elicited-pick, b2=0 to target-pick.
+    # What to emit when stage 1 cannot fill a position. jail_resample draws from the
+    # ELICITED side and needs the post-hoc rescore below, since an elicited token is usually
+    # outside the target top-k and its logprob is unknown at decode time; target_sample takes
+    # the target's own draw, which costs nothing because that call already sampled one.
+    fb_mode = str(jail_runtime_cfg.get("api_fallback", "jail_resample") or "jail_resample")
+    if fb_mode not in ("jail_resample", "target_sample"):
+        raise RuntimeError(f"api_jailbroken_output.fallback={fb_mode!r} unknown "
+                           f"(jail_resample | target_sample)")
+    # MIXTURE weights, in PROBABILITY space over the UNION of the two top-k sets:
+    # score = b1*p_target + b2*p_elicited, a side that did not propose a token contributing 0.
+    # Unlike a product over the intersection it does not need both contexts to like a token,
+    # and because the union always contains the target's own top-1, b2=0 is greedy vanilla.
     _ob1 = jail_runtime_cfg.get("b1")
     ob1 = float(_ob1) if _ob1 is not None else 1.0
     ob2 = float(jail_runtime_cfg.get("b2", 1.0))
-    # Minimum TARGET probability (percent) a candidate must reach to be emitted. 0 disables.
-    # At a fallback: jail_maxtarget/jail_resample reject below it (they have already priced
-    # their candidates). With floor_overlap, it also filters the OVERLAP set -- free, since
-    # every overlap member is in the target's top-k and so already priced. Without that, the
-    # overlap path can emit a sub-floor token the fallback floor never sees.
-    fb_floor = float(jail_runtime_cfg.get("api_fb_floor", 0.0) or 0.0)
-    floor_overlap = bool(jail_runtime_cfg.get("api_floor_overlap", False))
-    # Sharpening temperature for pick=mix_sample: draw proportional to w**(1/mix_temp).
-    # 1.0 is the plain mixture draw; ->0 converges on pick=mix. The plain draw is a coin
-    # flip at every position where the two contexts disagree (at b2=1 the loser still wins
-    # ~half the time), which is why sampling tripled the share of tokens the target rates
-    # under 10% while argmax did not. Sharpening keeps a draw but breaks the tie decisively.
-    mix_temp = float(jail_runtime_cfg.get("api_mix_temp", 1.0) or 1.0)
-    # STAGE-2 TRIGGER. Stage 1 picks from the top-k intersection (or the mixture over the
-    # union); stage 2 draws from the elicited context and floor-checks it against the target.
-    #   empty    -- escalate only when stage 1 has no candidate at all (~1-3% of positions).
-    #   disagree -- escalate with probability q, the share of the ELICITED context's own top-k
-    #               mass sitting on tokens the overlap cannot deliver. Soft version of the
-    #               same idea: q = 1 exactly when the overlap is empty, so `empty` is its
-    #               boundary case and nothing regresses. Keying on the elicited side (not the
-    #               target's residual mass) is deliberate -- the question is whether what the
-    #               elicited context wants is reachable, not whether the target is uncertain.
-    stage2_mode = str(jail_runtime_cfg.get("api_stage2", "empty") or "empty")
-    # Sharpening exponent on the disagree trigger: P(stage 2) = q ** (1/stage2_temp).
-    # 1.0 is the plain rate. As T -> 0 the probability collapses to 0 for every q < 1 but
-    # stays exactly 1 at q = 1 -- and q = 1 happens precisely when the overlap is empty --
-    # so small T recovers stage2=empty, and T sweeps continuously between the two.
-    stage2_temp = float(jail_runtime_cfg.get("api_stage2_temp", 1.0) or 1.0)
-    # STAGE-1 FLOOR for the mixture. The union scores a token the target did not propose as
-    # b1*0 + b2*p_e, so it cannot tell a token the target rates 1e-3 from one it rates 1e-12
-    # -- both score identically. Measured: the mix arms' worst tokens are all elicited-only
-    # picks at 1e-10..1e-08 % with the elicited context 56-93% confident, while the
-    # intersection arms never go below ~1e-04 % because every candidate is in the target's
-    # top-k. Two ways to close that:
-    #   mix_set=target -- drop elicited-only candidates entirely, scoring t + e over the
-    #                     target's top-k. Free, and the floor comes with the set. Still
-    #                     reduces to greedy vanilla at b2=0, unlike the intersection rule.
-    #   mix_set=union  -- keep the reach, but verify the winner. A token outside the target's
-    #                     top-k obeys t(x) <= min_T(t), so when the target's own k-th best is
-    #                     already under the floor EVERY elicited-only candidate is too and
-    #                     they go for free; only when that bound clears the floor is a
-    #                     cand_logprob call needed. Failing candidates are dropped and the
-    #                     argmax retaken.
-    #   union    -- T | E, the default: a side that did not propose a token contributes 0.
-    #   target   -- T only, dropping the elicited-only candidates (E \ O). Floors the
-    #               minimum for free and still reduces to greedy vanilla at b2=0.
-    #   elicited -- E only, dropping the target-only candidates (T \ O). The mirror image:
-    #               keeps the mixture's reach into what the elicited context wants but
-    #               removes the target's own favourites when the elicited side ignored them,
-    #               so it does NOT reduce to vanilla at b2=0.
-    # The two restrictions bracket the union; their intersection is the `combined` rule's
-    # candidate set, scored additively rather than as a product.
-    mix_set = str(jail_runtime_cfg.get("api_mix_set", "union") or "union")
-    if mix_set not in ("union", "target", "elicited"):
-        raise RuntimeError(f"api_jailbroken_output.mix_set={mix_set!r} unknown "
-                           f"(union | target | elicited)")
-    mix_floor = float(jail_runtime_cfg.get("api_mix_floor", 0.0) or 0.0)
-    # What to do when the stage-1 winner is an elicited-only token the target prices below
-    # mix_floor. "repick" drops it and re-argmaxes, staying in stage 1 with the next-best
-    # candidate. "stage2" hands the position to the elicited resample instead, which is the
-    # machinery that already enforces a floor and can search past the top-k -- so a position
-    # stage 1 cannot fill plausibly is escalated rather than filled with a second choice.
-    mix_floor_action = str(jail_runtime_cfg.get("api_mix_floor_action", "repick") or "repick")
-    if mix_floor_action not in ("repick", "stage2"):
-        raise RuntimeError(f"api_jailbroken_output.mix_floor_action={mix_floor_action!r} "
-                           f"unknown (repick | stage2)")
-    #   never    -- stage 2 is switched off entirely. An empty overlap no longer routes
-    #                anywhere: the mixture just scores the UNION and takes its argmax, which
-    #                is always non-empty because the target's own top-k is in it. Isolates
-    #                the union rule from the elicited resample, so the two mechanisms that
-    #                have been carrying these arms together can be told apart. Only
-    #                meaningful for the mixture -- every other pick mode has the overlap AS
-    #                its candidate set and would have nothing to choose from.
-    #   threshold -- DETERMINISTIC: escalate iff q >= stage2_theta. The sampling form
-    #                spreads escalations across every position in proportion to q, so a
-    #                position with q=0.10 still escalates a tenth of the time even though
-    #                stage 1 had a perfectly good candidate there; a threshold spends the
-    #                same budget only where the contexts genuinely disagree. It also spans
-    #                the whole family: theta=1 fires only on q=1, which IS `empty`;
-    #                theta -> 0 approaches always-escalate; theta > 1 is `never`.
-    stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 1.0) or 1.0)
-    if stage2_mode not in ("empty", "disagree", "never", "threshold"):
+    # FLOOR (percent): one value governing BOTH stages. In stage 1 it rejects candidates the
+    # target prices below it -- target-side members directly, and elicited-only members via
+    # the free bound t(x) <= min_T(t), falling back to one cand_logprob call on the winner
+    # only when that bound cannot settle it. In stage 2 it is the bar an elicited draw must
+    # clear to be accepted. It exists because the union scores a token the target did not
+    # propose as b1*0 + b2*p_e, so it cannot tell a token the target rates 1e-3 from one it
+    # rates 1e-12: measured, the unfloored arm's worst tokens were elicited-only picks at
+    # 1e-10..1e-08 % with the elicited context 56-93% confident.
+    floor = float(jail_runtime_cfg.get("api_floor", 0.0) or 0.0)
+    # What to do when the stage-1 winner is an elicited-only token priced below the floor.
+    # "repick" drops it and re-argmaxes, staying in stage 1 with the next-best candidate.
+    # "stage2" hands the position to the elicited resample instead.
+    floor_action = str(jail_runtime_cfg.get("api_floor_action", "repick") or "repick")
+    if floor_action not in ("repick", "stage2"):
+        raise RuntimeError(f"api_jailbroken_output.floor_action={floor_action!r} unknown "
+                           f"(repick | stage2)")
+    # STAGE-2 TRIGGER, on q = the share of the ELICITED context's own top-k mass sitting on
+    # tokens the overlap cannot deliver. Keying on the elicited side is deliberate: the
+    # question is whether what that context wants is reachable, not whether the target is
+    # uncertain. q = 1 exactly when the two top-k sets are disjoint.
+    #   threshold -- escalate iff q >= stage2_theta. Deterministic, so the trigger adds no
+    #                run-to-run variance. theta=1 fires only on disjoint sets; theta -> 0
+    #                approaches always-escalate.
+    #   never     -- stage 2 off entirely. The mixture scores the union and takes its argmax,
+    #                which is never empty because the target's own top-k is in it.
+    stage2_mode = str(jail_runtime_cfg.get("api_stage2", "threshold") or "threshold")
+    if stage2_mode not in ("threshold", "never"):
         raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
-                           f"(empty | disagree | never | threshold)")
-    if stage2_mode == "threshold" and pick_mode not in ("mix", "mix_sample") and stage2_theta > 1.0:
-        raise RuntimeError("api_jailbroken_output.stage2='threshold' with theta>1 never "
-                           "escalates; only pick=mix/mix_sample can run without stage 2")
-    if stage2_mode == "never" and pick_mode not in ("mix", "mix_sample"):
-        raise RuntimeError(f"api_jailbroken_output.stage2='never' needs pick=mix or "
-                           f"mix_sample; pick={pick_mode!r} uses the overlap as its "
-                           f"candidate set and would be empty with no fallback")
-    _floor_lp = math.log(fb_floor / 100.0) if fb_floor > 0.0 else None
+                           f"(threshold | never)")
+    stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.99) or 0.99)
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
@@ -845,7 +642,6 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
 
         gen, t_lps, j_lps, n_fallback, n_unres, n_floored = [], [], [], 0, 0, 0
         n_resamples = 0
-        n_ovfloored = 0
         n_shortcut = 0
         n_empty = 0
         n_mixdrop = 0        # candidates removed by the stage-1 floor
@@ -868,57 +664,31 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     break
                 tmap = dict(tr["top"])
                 overlap = [(s, lp) for s, lp in jr["top"] if s in tmap]
-                if floor_overlap and _floor_lp is not None:
-                    # Drop overlap members the target rates below the floor. Emptying the set
-                    # turns the position into a fallback, which the floor also governs.
-                    _kept = [x for x in overlap if tmap[x[0]] >= _floor_lp]
-                    n_ovfloored += len(overlap) - len(_kept)
-                    overlap = _kept
                 if not overlap:
                     n_empty += 1
-                # Disagreement share of the elicited top-k. Empty overlap => q = 1, which is
-                # why `disagree` subsumes `empty` rather than replacing it.
+                # Disagreement share of the elicited top-k; q = 1 exactly when the two
+                # top-k sets are disjoint.
                 _ov = {x[0] for x in overlap}
                 _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
                 _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
                 q_sum += _q
-                if stage2_mode == "never":
-                    _stage2 = False
-                elif stage2_mode == "threshold":
-                    _stage2 = _q >= stage2_theta
-                elif stage2_mode == "empty":
-                    _stage2 = not overlap
-                else:
-                    _p2 = _q if stage2_temp == 1.0 else _q ** (1.0 / stage2_temp)
-                    _stage2 = random.random() < _p2
-                # z = l_target + beta * l_elicited, over this step's candidates only
-                _comb = lambda x, _m=tmap: ob1 * _m[x[0]] + ob2 * x[1]
-                # MIXTURE (pick=mix / mix_sample), in PROBABILITY space over the UNION of the
-                # two top-k sets: score = b1*p_target + b2*p_elicited, a side that did not
-                # propose the token contributing 0. Unlike the product above it does not need
-                # both contexts to like a token, and because the union always contains the
-                # target's own top-1, b2=0 reduces to greedy vanilla -- the property the
-                # intersection rule cannot have, since the target's argmax is often outside it.
+                _stage2 = False if stage2_mode == "never" else (_q >= stage2_theta)
+                # Score over the UNION, in probability space.
                 _union = {}
                 for _t, _lp in tr["top"]:
                     _union[_t] = [math.exp(_lp), 0.0]
                 for _t, _lp in jr["top"]:
                     _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
                 _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
-                if pick_mode in ("mix", "mix_sample") and (mix_set != "union" or mix_floor > 0.0):
-                    _eset = {_x for _x, _ in jr["top"]}
+                if floor > 0.0:
                     _tmin = min(math.exp(v) for v in tmap.values()) * 100.0 if tmap else 0.0
-                    # Free rejection of every elicited-only candidate: either we are not
-                    # allowing them at all, or the target's own k-th best already fails the
-                    # floor, which upper-bounds all of them.
-                    _drop_all_e = (mix_set == "target") or (mix_floor > 0.0 and _tmin < mix_floor)
+                    # Free rejection of every elicited-only candidate when the target's own
+                    # k-th best already fails the floor: nothing outside the top-k can beat it.
+                    _drop_all_e = _tmin < floor
                     _keep = []
                     for _t, _w in _mix:
-                        if mix_set == "elicited" and _t not in _eset:
-                            n_mixdrop += 1          # target-only candidate, excluded by set
-                            continue
                         if _t in tmap:
-                            if mix_floor > 0.0 and math.exp(tmap[_t]) * 100.0 < mix_floor:
+                            if math.exp(tmap[_t]) * 100.0 < floor:
                                 n_mixdrop += 1
                                 continue
                             _keep.append((_t, _w))
@@ -931,24 +701,24 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 # emptied by the floor routes to stage 2 rather than falling through with a
                 # stale pick.
                 _mixpick = None
-                if pick_mode == "mix" and _mix:
+                if _mix:
                     _mixpick = max(_mix, key=lambda x: x[1])[0]
-                    # Only reachable with mix_set=union and a floor the free bound could not
-                    # settle: price the winner, drop it if it fails, retake the argmax.
-                    while mix_floor > 0.0 and _mixpick is not None and _mixpick not in tmap:
+                    # Only reachable when the free bound could not settle it: price the
+                    # winner, then drop it or escalate if it fails.
+                    while floor > 0.0 and _mixpick is not None and _mixpick not in tmap:
                         _pid = res.id_of(_mixpick)
                         _ok = False
                         if _pid is not None:
                             try:
                                 n_mixcalls += 1
-                                _ok = math.exp(client.cand_logprob(t_ids, _pid)) * 100.0 >= mix_floor
+                                _ok = math.exp(client.cand_logprob(t_ids, _pid)) * 100.0 >= floor
                             except RuntimeError as e:
                                 truncated = str(e)
                                 break
                         if _ok:
                             break
                         n_mixdrop += 1
-                        if mix_floor_action == "stage2":
+                        if floor_action == "stage2":
                             # Escalate this position instead of settling for second best.
                             _stage2 = True
                             _mixpick = None
@@ -957,31 +727,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
                 if truncated:
                     break
-                if ((overlap or stage2_mode == "never") and not _stage2 and _mix
-                        and (pick_mode == "mix_sample"
-                             or (pick_mode == "mix" and _mixpick is not None))):
-                    # Union candidate set, but ONLY where the two top-k sets actually
-                    # intersect. An empty overlap still routes to the fallback below, so the
-                    # elicited resample + floor keeps carrying the disjoint positions.
-                    if pick_mode == "mix":
-                        pick = _mixpick
-                    else:
-                        if mix_temp != 1.0:
-                            # Renormalise to the largest weight before the power so a
-                            # small temperature cannot underflow every candidate to 0.
-                            _wmax = max(w for _, w in _mix) or 1.0
-                            _e = 1.0 / mix_temp
-                            _draw = [(t, (w / _wmax) ** _e) for t, w in _mix]
-                        else:
-                            _draw = _mix
-                        _tot = sum(w for _, w in _draw) or 1.0
-                        _r, _acc = random.random() * _tot, 0.0
-                        pick = _draw[-1][0]
-                        for _t, _w in _draw:
-                            _acc += _w
-                            if _r <= _acc:
-                                pick = _t
-                                break
+                if (overlap or stage2_mode == "never") and not _stage2 and _mixpick is not None:
+                    # The union is scored everywhere, but stage 1 only OWNS a position when
+                    # the two top-k sets actually intersect (or stage 2 is off). A disjoint
+                    # position routes to the fallback below, which is where the behaviour
+                    # that neither context agrees on has to come from.
+                    pick = _mixpick
                     tid = res.id_of(pick)
                     if tid is None:
                         n_unres += 1
@@ -990,72 +741,15 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     else:
                         t_lp = tmap.get(pick)          # None if outside the target top-k
                         j_lp = dict(jr["top"]).get(pick)
-                elif overlap and not _stage2:
-                    # overlap entries are (token_string, ELICITED logprob); tmap holds the
-                    # TARGET logprob for the same strings.
-                    if pick_mode in ("elicited", "argmax"):
-                        pick = max(overlap, key=lambda x: x[1])[0]
-                    elif pick_mode == "target":
-                        pick = max(overlap, key=lambda x: tmap[x[0]])[0]
-                    elif pick_mode == "combined":
-                        # Summing logprobs multiplies the probabilities — the top-5-restricted
-                        # form of the true tilt at b1=1, b2=beta, argmaxed rather than sampled.
-                        pick = max(overlap, key=_comb)[0]
-                    elif pick_mode == "combined_min":
-                        # Anti-selection control: the LEAST probable overlap member.
-                        pick = min(overlap, key=_comb)[0]
-                    elif pick_mode == "combined_sample":
-                        # Draw from the overlap in proportion to the PRODUCT of the two
-                        # probabilities, rather than argmaxing it. Unlike "random" this
-                        # respects the ranking, and unlike "combined" it is stochastic, so
-                        # rounds differ and a pool exists for post-run selection.
-                        pick = _wsample(overlap, _comb)[0]
-                    elif pick_mode == "random":
-                        pick = random.choice(overlap)[0]
-                    elif pick_mode == "sample":
-                        w = [math.exp(lp) for _, lp in overlap]
-                        tot = sum(w) or 1.0
-                        r, acc = random.random() * tot, 0.0
-                        pick = overlap[-1][0]
-                        for (s, _), wi in zip(overlap, w):
-                            acc += wi
-                            if r <= acc:
-                                pick = s
-                                break
-                    else:
-                        raise RuntimeError(
-                            f"jailbroken_output.api_pick={pick_mode!r} unknown "
-                            f"(elicited | target | combined | combined_min | combined_sample "
-                            f"| random | sample | mix | mix_sample)")
-                    tid = res.id_of(pick)
-                    if tid is None:
-                        # The overlap was NON-empty; the chosen surface form just could not
-                        # be mapped back to a token id. Counted separately from the
-                        # empty-overlap case: they are different events and lumping them
-                        # made the reported "empty-overlap fallback %" an upper bound.
-                        tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
-                        j_lp = dict(jr["top"]).get(tr["sampled_str"])
-                        n_unres += 1
-                    else:
-                        t_lp = tmap[pick]
-                        j_lp = dict(jr["top"])[pick]
                 else:
                     n_fallback += 1
                     jmap = dict(jr["top"])
-                    cand = None
+                    tid = None
                     _forced_t_lp = None
                     _forced_j_lp = None
-                    if fb_mode == "top5_argmax" and tr["top"]:
-                        cand = tr["top"][0][0]
-                    elif fb_mode == "top5_random" and tr["top"]:
-                        cand = random.choice(tr["top"])[0]
-                    elif fb_mode == "top5_weighted" and tr["top"]:
-                        cand = _wsample(tr["top"], lambda x: x[1])[0]
-                    elif fb_mode == "jail_argmax" and jr["top"]:
-                        cand = jr["top"][0][0]
-                    elif (fb_mode == "jail_resample" and fb_floor > 0.0 and tmap
-                          and sum(1 for _lp in tmap.values()
-                                  if math.exp(_lp) * 100.0 >= fb_floor) <= 1):
+                    if (fb_mode == "jail_resample" and floor > 0.0 and tmap
+                            and sum(1 for _lp in tmap.values()
+                                    if math.exp(_lp) * 100.0 >= floor) <= 1):
                         # The target's top-k is sorted, so if at most one member clears the
                         # floor then at most one token in the WHOLE vocabulary does -- every
                         # token outside the top-k is below its smallest member. Resampling
@@ -1071,11 +765,10 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         else:
                             tid, t_lp, j_lp = _amid, tmap[_am], jmap.get(_am)
                     elif fb_mode == "jail_resample":
-                        # Accept the first elicited draw clearing api_fb_floor, else the best
-                        # of `fb_tries`. Unlike jail_maxtarget it only intervenes when a draw
-                        # is actually bad, so the elicited preference survives where it is
-                        # already acceptable (maxtarget overrides every position and cost ~20
-                        # presence points). Stochastic, so rounds differ and pools stay diverse.
+                        # Accept the first elicited draw clearing the floor, else the best of
+                        # `fb_tries`. It only intervenes when a draw is actually bad, so the
+                        # elicited preference survives where it is already acceptable.
+                        # Stochastic, so rounds differ and pools stay diverse.
                         _tries = []
                         for _k in range(fb_tries):
                             if _k == 0:
@@ -1095,12 +788,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 continue
                             _tlp = client.cand_logprob(t_ids, _sid)
                             _tries.append((_tlp, _sid, _slp))
-                            if math.exp(_tlp) * 100.0 >= fb_floor:
+                            if math.exp(_tlp) * 100.0 >= floor:
                                 break
                         if _tries:
                             _bt, _bid, _blp = max(_tries, key=lambda x: x[0])
                             n_resamples += len(_tries) - 1
-                            if math.exp(_bt) * 100.0 >= fb_floor:
+                            if math.exp(_bt) * 100.0 >= floor:
                                 tid, _forced_t_lp, _forced_j_lp = _bid, _bt, _blp
                             else:
                                 # Every draw failed. Keeping the best of them still emits an
@@ -1110,62 +803,23 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                                 # side and take a floored target draw instead.
                                 n_floored += 1
                                 _fs = client.floored_target_sample(
-                                    t_ids, top_k, temperature, fb_floor,
+                                    t_ids, top_k, temperature, floor,
                                     math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
                                 tid = _fs["sampled_id"]
                                 _forced_t_lp = tmap.get(_fs["sampled_str"], float("nan"))
                                 _forced_j_lp = jmap.get(_fs["sampled_str"])
-                    elif fb_mode == "jail_maxtarget" and jr["top"]:
-                        # Price the whole elicited top-k under the TARGET, emit the most
-                        # plausible. Constant cost k, no threshold to tune. The target's own
-                        # top-k cannot supply these prices: the sets are disjoint here.
-                        _cands = [(t, res.id_of(t)) for t, _ in jr["top"]]
-                        _cands = [(t, i) for t, i in _cands if i is not None]
-                        if _cands:
-                            with ThreadPoolExecutor(max_workers=len(_cands)) as _ex:
-                                _lps = list(_ex.map(
-                                    lambda ci: client.cand_logprob(t_ids, ci[1]), _cands))
-                            _best = max(range(len(_cands)), key=lambda k: _lps[k])
-                            # A position can have its ENTIRE elicited top-k be hopeless, and
-                            # min-of-mins is a single-token statistic, so one such position
-                            # erases every other gain. Revert those to target_sample.
-                            if fb_floor > 0.0 and math.exp(_lps[_best]) * 100.0 < fb_floor:
-                                cand = None
-                                n_floored += 1
-                            else:
-                                cand = _cands[_best][0]
-                                _forced_t_lp = _lps[_best]   # exact; no rescore needed
-                    elif fb_mode not in ("target_sample", "top5_argmax", "top5_random",
-                                         "top5_weighted", "jail_sample", "jail_argmax",
-                                         "jail_maxtarget", "jail_resample"):
-                        raise RuntimeError(
-                            f"jailbroken_output.api_fallback={fb_mode!r} unknown (target_sample "
-                            f"| top5_argmax | top5_random | top5_weighted | jail_sample "
-                            f"| jail_argmax | jail_maxtarget | jail_resample)")
-                    cid = res.id_of(cand) if cand is not None else None
-                    if fb_mode == "jail_resample" and _forced_t_lp is not None:
+                    if _forced_t_lp is not None:
                         t_lp, j_lp = _forced_t_lp, _forced_j_lp     # tid already set above
-                    elif cid is not None and fb_mode == "jail_maxtarget" and _forced_t_lp is not None:
-                        tid, t_lp, j_lp = cid, _forced_t_lp, jmap.get(cand)
-                    elif cid is not None:
-                        # tmap only covers the target's own top-k. A jail_argmax candidate
-                        # is by construction outside it (the sets are disjoint here), so its
-                        # target logprob is unknown until the post-hoc rescore.
-                        tid, t_lp, j_lp = cid, tmap.get(cand), jmap.get(cand)
-                    elif fb_mode == "jail_sample":
-                        # The elicited context's own draw from its FULL distribution.
-                        tid, j_lp = jr["sampled_id"], jr["sampled_lp"]
-                        t_lp = tmap.get(jr["sampled_str"])
-                    elif fb_floor > 0.0 and tmap:
+                    elif fb_mode == "target_sample" and floor > 0.0 and tmap:
                         # target_sample under a floor: redraw with min_p so the target's own
                         # sample cannot land below it either.
                         _fs = client.floored_target_sample(
-                            t_ids, top_k, temperature, fb_floor,
+                            t_ids, top_k, temperature, floor,
                             math.exp(max(tmap.values())), aff + "-t")
                         tid = _fs["sampled_id"]
                         t_lp = tmap.get(_fs["sampled_str"], float("nan"))
                         j_lp = jmap.get(_fs["sampled_str"])
-                    else:                # target_sample, or an unresolvable surface form
+                    elif tid is None:    # target_sample, or the shortcut left tid unset
                         tid, t_lp = tr["sampled_id"], tr["sampled_lp"]
                         j_lp = jmap.get(tr["sampled_str"])
                 if tid is None or tid in res.stop_ids:
@@ -1181,8 +835,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         # extra teacher-forced call per turn, and only for these arms.
         # Unconditional, not only when a hole exists: next_topk and echo scoring disagree by
         # ~-0.6pp on the mean, so a transcript mixing both would be measured two ways at once.
-        if (fb_mode in ("jail_sample", "jail_argmax", "jail_maxtarget", "jail_resample")
-                or pick_mode in ("mix", "mix_sample")) and gen:
+        if gen:
             # Mandatory, not best-effort: without it the plausibility mean would be taken
             # over only the tokens the target happened to rank highly, which is precisely
             # the bias this arm is being tested for. _prob_summary also cannot consume a
@@ -1199,7 +852,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
-                "n_ovfloored": n_ovfloored, "n_shortcut": n_shortcut,
+                "n_shortcut": n_shortcut,
                 "n_empty": n_empty, "q_sum": q_sum,
                 "n_mixdrop": n_mixdrop, "n_mixcalls": n_mixcalls,
                 "truncated": truncated}
@@ -1215,7 +868,6 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nu = sum(o.pop("n_unres", 0) for o in out)
     nfl = sum(o.pop("n_floored", 0) for o in out)
     nrs = sum(o.pop("n_resamples", 0) for o in out)
-    nov = sum(o.pop("n_ovfloored", 0) for o in out)
     nsc = sum(o.pop("n_shortcut", 0) for o in out)
     nem = sum(o.pop("n_empty", 0) for o in out)
     qsm = sum(o.pop("q_sum", 0.0) for o in out)
@@ -1226,28 +878,24 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nt = sum(len(o["best_ids"]) for o in out)
     # nf = disjoint top-k sets; nu = overlap non-empty but the pick was unresolvable. Separate
     # counters because they are different events, and nu being ~0 should be checkable.
-    print(f"  [api_tilt rule=overlap pick={pick_mode} b1={ob1:g} b2={ob2:g} fb={fb_mode}] {nt} tokens, "
+    print(f"  [api_tilt b1={ob1:g} b2={ob2:g} fb={fb_mode}] {nt} tokens, "
           f"{nf} stage-2 ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
-          + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if fb_floor > 0 else "")
+          + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if floor > 0 else "")
           + (f", {nrs} resamples" if nrs else "")
-          + (f", {nov} overlap-floored" if nov else "")
-          + (f", mix_set={mix_set} floor={mix_floor:g} ({nmd} dropped, {nmc} priced)"
-             if (mix_set != "union" or mix_floor > 0.0) else "")
+          + (f", floor={floor:g} ({nmd} dropped, {nmc} priced)" if floor > 0.0 else "")
           + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
              if stage2_mode in ("disagree", "threshold") else "")
-          + (f" T={stage2_temp:g}" if stage2_mode == "disagree" and stage2_temp != 1.0 else "")
           + (f" theta={stage2_theta:g}" if stage2_mode == "threshold" else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
-    _record_cost(client, f"overlap:{pick_mode}:{fb_mode}",
+    _record_cost(client, f"mix:{fb_mode}",
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt,
                   "n_fallback": nf, "n_unres": nu, "n_floored": nfl, "n_resamples": nrs,
-                  "n_ovfloored": nov, "n_shortcut": nsc, "n_empty": nem,
-                  "mix_set": mix_set, "mix_floor": mix_floor,
+                  "n_shortcut": nsc, "n_empty": nem, "floor": floor,
                   "n_mixdrop": nmd, "n_mixcalls": nmc,
-                  "stage2": stage2_mode, "stage2_temp": stage2_temp,
+                  "stage2": stage2_mode,
                   "stage2_theta": stage2_theta,
                   "mean_q": round(qsm / max(nt, 1), 4),
                   "n_scenarios": len(out)})
@@ -1270,9 +918,6 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
     if _rule == "overlap":
         return _driven_overlap(handle, jail_runtime_cfg, target_msgs_batch,
                                max_tokens, temperature, no_think_target)
-    if _rule == "sample_floor":
-        return _driven_sample_floor(handle, jail_runtime_cfg, target_msgs_batch,
-                                    max_tokens, temperature, no_think_target)
     client: ApiTiltTarget = handle["client"]
     target_only = bool(jail_runtime_cfg.get("target_only"))
     b2 = float(jail_runtime_cfg.get("b2", 2.0))
@@ -1342,4 +987,4 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
 
 
 __all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api",
-           "_driven_overlap", "_driven_sample_floor"]
+           "_driven_overlap"]

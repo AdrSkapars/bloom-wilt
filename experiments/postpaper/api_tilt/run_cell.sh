@@ -8,9 +8,10 @@
 #
 #   BEH    self_harm | goblin | selfpres          (default self_harm)
 #   MODEL  dsv4 | glm | gptoss | qwen             (default dsv4)
-#   BLOOM_API_PICK      elicited|target|combined|combined_min|combined_sample|random|sample
-#   BLOOM_API_JAIL_B2   elicited-term weight; also the overlap score's elicited weight
-#   BLOOM_API_FALLBACK  target_sample | top5_argmax | top5_random | top5_weighted
+#   BLOOM_API_JAIL_B2   elicited-term weight in the union mixture (default 1)
+#   BLOOM_API_FLOOR     min target prob (percent) for an emitted token, BOTH stages
+#   BLOOM_API_STAGE2    threshold | never      BLOOM_API_STAGE2_THETA  escalate iff q >= theta
+#   BLOOM_API_FLOOR_ACTION  repick | stage2    BLOOM_API_FALLBACK  jail_resample | target_sample
 #   BLOOM_API_JAIL_PREFILL  0 to drop the behaviour file's prefill from the elicited context
 set -e
 cd "$(dirname "$0")/../../.."
@@ -101,42 +102,23 @@ case "$ARM" in
     export BLOOM_FOLDER=${ROOT}/api_elicited_15s
     export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
   overlap)
-    PICK="${BLOOM_API_PICK:-combined}"
     B2="${BLOOM_API_JAIL_B2:-1}"
-    FB="${BLOOM_API_FALLBACK:-target_sample}"
-    export BLOOM_API_JAIL_ENABLED=1
-    export BLOOM_API_PICK=$PICK BLOOM_API_JAIL_B2=$B2 BLOOM_API_FALLBACK=$FB
-    if [ "$B2" = "1" ]; then BSUF=""; else BSUF="_b${B2}"; fi
-    if [ "$FB" = "target_sample" ]; then FSUF=""; else FSUF="_fb${FB#top5_}"; fi
+    FL="${BLOOM_API_FLOOR:-1e-06}"
+    TH="${BLOOM_API_STAGE2_THETA:-0.99}"
+    S2="${BLOOM_API_STAGE2:-threshold}"
+    FA="${BLOOM_API_FLOOR_ACTION:-repick}"
+    FB="${BLOOM_API_FALLBACK:-jail_resample}"
+    export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=overlap
+    export BLOOM_API_JAIL_B2=$B2 BLOOM_API_FLOOR=$FL BLOOM_API_STAGE2=$S2            BLOOM_API_STAGE2_THETA=$TH BLOOM_API_FLOOR_ACTION=$FA BLOOM_API_FALLBACK=$FB
+    if [ "$B2" = "1" ];              then BSUF="";  else BSUF="_b${B2}";   fi
+    if [ "$FL" = "1e-06" ];          then LSUF="";  else LSUF="_fl${FL}";  fi
+    if [ "$S2" = "threshold" ];      then S2SUF=""; else S2SUF="_s2${S2}"; fi
+    if [ "$TH" = "0.99" ];           then THSUF=""; else THSUF="_th${TH}"; fi
+    if [ "$FA" = "repick" ];         then ASUF="";  else ASUF="_${FA}";    fi
+    if [ "$FB" = "jail_resample" ];  then FSUF="";  else FSUF="_fb${FB}";  fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
-    FL="${BLOOM_API_FB_FLOOR:-0}"
-    if [ "$FL" = "0" ]; then LSUF=""; else LSUF="_fl${FL}"; export BLOOM_API_FB_FLOOR=$FL; fi
-    if [ "${BLOOM_API_FLOOR_OVERLAP:-0}" = "1" ]; then OSUF="_ov"; else OSUF=""; fi
-    S2="${BLOOM_API_STAGE2:-empty}"
-    if [ "$S2" = "empty" ]; then S2SUF=""; else S2SUF="_s2${S2}"; export BLOOM_API_STAGE2=$S2; fi
-    TH="${BLOOM_API_STAGE2_THETA:-1}"
-    if [ "$S2" = "threshold" ]; then S2SUF="${S2SUF}_th${TH}"; export BLOOM_API_STAGE2_THETA=$TH; fi
-    ST="${BLOOM_API_STAGE2_TEMP:-1}"
-    if [ "$ST" != "1" ]; then S2SUF="${S2SUF}_st${ST}"; export BLOOM_API_STAGE2_TEMP=$ST; fi
-    MS="${BLOOM_API_MIX_SET:-union}"
-    if [ "$MS" = "union" ]; then MSSUF=""; else MSSUF="_ms${MS}"; export BLOOM_API_MIX_SET=$MS; fi
-    MFL="${BLOOM_API_MIX_FLOOR:-0}"
-    if [ "$MFL" = "0" ]; then MFSUF=""; else MFSUF="_mfl${MFL}"; export BLOOM_API_MIX_FLOOR=$MFL; fi
-    MFA="${BLOOM_API_MIX_FLOOR_ACTION:-repick}"
-    if [ "$MFA" != "repick" ]; then MFSUF="${MFSUF}_${MFA}"; export BLOOM_API_MIX_FLOOR_ACTION=$MFA; fi
-    MT="${BLOOM_API_MIX_TEMP:-1}"
-    if [ "$MT" = "1" ]; then MSUF=""; else MSUF="_mt${MT}"; export BLOOM_API_MIX_TEMP=$MT; fi
-    export BLOOM_FOLDER=${ROOT}/api_overlap_${PICK}${BSUF}${FSUF}${PSUF}${LSUF}${OSUF}${MSUF}${MSSUF}${MFSUF}${S2SUF}_15s
-    export BLOOM_API_RULE=overlap ;;
-  samplefloor)
-    # rule=sample_floor: elicited draw + target floor at EVERY position, no top-k intersection
-    FL="${BLOOM_API_FB_FLOOR:-1e-04}"
-    TR="${BLOOM_API_FB_TRIES:-10}"
-    export BLOOM_API_JAIL_ENABLED=1
-    export BLOOM_API_RULE=sample_floor
-    export BLOOM_API_FB_FLOOR=$FL BLOOM_API_FB_TRIES=$TR
-    export BLOOM_FOLDER=${ROOT}/api_samplefloor_fl${FL}_t${TR}_15s ;;
-  *) echo "usage: run_cell.sh [vanilla|elicited|overlap|samplefloor] [rounds]"; exit 2 ;;
+    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${PSUF}_15s ;;
+  *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
 
 # RUN_TAG appends a suffix to the folder so an identical config can be repeated

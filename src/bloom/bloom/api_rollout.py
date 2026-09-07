@@ -89,19 +89,13 @@ def run_rollout_api(
         "b2": float(jail_cfg.get("b2", 1.0)),   # also the overlap score's elicited weight
         "target_floor": 0.0,   # needs full-vocab target logits; impossible over a text API
         "api_rule": str(jail_cfg.get("rule", "corner") or "corner"),
-        "api_pick": str(jail_cfg.get("pick", "elicited") or "elicited"),
-        "api_fallback": str(jail_cfg.get("fallback", "target_sample") or "target_sample"),
+        "api_fallback": str(jail_cfg.get("fallback", "jail_resample") or "jail_resample"),
         "api_top_k": int(jail_cfg.get("top_k", 5) or 5),
-        "api_fb_floor": float(jail_cfg.get("fb_floor", 0.0) or 0.0),
-        "api_fb_tries": int(jail_cfg.get("fb_tries", 5) or 5),
-        "api_floor_overlap": bool(jail_cfg.get("floor_overlap", False)),
-        "api_mix_temp": float(jail_cfg.get("mix_temp", 1.0) or 1.0),
-        "api_stage2": str(jail_cfg.get("stage2", "empty") or "empty"),
-        "api_stage2_temp": float(jail_cfg.get("stage2_temp", 1.0) or 1.0),
-        "api_stage2_theta": float(jail_cfg.get("stage2_theta", 1.0) or 1.0),
-        "api_mix_set": str(jail_cfg.get("mix_set", "union") or "union"),
-        "api_mix_floor": float(jail_cfg.get("mix_floor", 0.0) or 0.0),
-        "api_mix_floor_action": str(jail_cfg.get("mix_floor_action", "repick") or "repick"),
+        "api_floor": float(jail_cfg.get("floor", 0.0) or 0.0),
+        "api_floor_action": str(jail_cfg.get("floor_action", "repick") or "repick"),
+        "api_fb_tries": int(jail_cfg.get("fb_tries", 10) or 10),
+        "api_stage2": str(jail_cfg.get("stage2", "threshold") or "threshold"),
+        "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.99) or 0.99),
     }
 
     if evaluator_model_id.startswith("local/"):
@@ -121,7 +115,7 @@ def run_rollout_api(
     # one hosted handle serves both contexts (self-jail; no weights)
     jail_runtime_cfg["hf"] = load_api_target(target_model_id)
     print(f"  [api_jailbroken_output] target={target_model_id} "
-          f"rule={jail_runtime_cfg['api_rule']} pick={jail_runtime_cfg['api_pick']} "
+          f"rule={jail_runtime_cfg['api_rule']} "
           f"fb={jail_runtime_cfg['api_fallback']} "
           f"(b1={jail_runtime_cfg['b1']:g}, b2={jail_runtime_cfg['b2']:g})", flush=True)
 
