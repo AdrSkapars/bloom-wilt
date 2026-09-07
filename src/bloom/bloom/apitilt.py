@@ -606,7 +606,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # What to do when the stage-1 winner is an elicited-only token priced below the floor.
     # "repick" drops it and re-argmaxes, staying in stage 1 with the next-best candidate.
     # "stage2" hands the position to the elicited resample instead.
-    floor_action = str(jail_runtime_cfg.get("api_floor_action", "repick") or "repick")
+    floor_action = str(jail_runtime_cfg.get("api_floor_action", "stage2") or "stage2")
     if floor_action not in ("repick", "stage2"):
         raise RuntimeError(f"api_jailbroken_output.floor_action={floor_action!r} unknown "
                            f"(repick | stage2)")

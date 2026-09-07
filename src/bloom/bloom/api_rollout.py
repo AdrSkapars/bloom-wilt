@@ -92,7 +92,7 @@ def run_rollout_api(
         "api_fallback": str(jail_cfg.get("fallback", "jail_resample") or "jail_resample"),
         "api_top_k": int(jail_cfg.get("top_k", 5) or 5),
         "api_floor": float(jail_cfg.get("floor", 0.0) or 0.0),
-        "api_floor_action": str(jail_cfg.get("floor_action", "repick") or "repick"),
+        "api_floor_action": str(jail_cfg.get("floor_action", "stage2") or "stage2"),
         "api_fb_tries": int(jail_cfg.get("fb_tries", 10) or 10),
         "api_stage2": str(jail_cfg.get("stage2", "threshold") or "threshold"),
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.99) or 0.99),

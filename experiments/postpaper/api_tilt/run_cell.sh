@@ -106,7 +106,7 @@ case "$ARM" in
     FL="${BLOOM_API_FLOOR:-1e-06}"
     TH="${BLOOM_API_STAGE2_THETA:-0.99}"
     S2="${BLOOM_API_STAGE2:-threshold}"
-    FA="${BLOOM_API_FLOOR_ACTION:-repick}"
+    FA="${BLOOM_API_FLOOR_ACTION:-stage2}"
     FB="${BLOOM_API_FALLBACK:-jail_resample}"
     export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=overlap
     export BLOOM_API_JAIL_B2=$B2 BLOOM_API_FLOOR=$FL BLOOM_API_STAGE2=$S2            BLOOM_API_STAGE2_THETA=$TH BLOOM_API_FLOOR_ACTION=$FA BLOOM_API_FALLBACK=$FB
@@ -114,7 +114,7 @@ case "$ARM" in
     if [ "$FL" = "1e-06" ];          then LSUF="";  else LSUF="_fl${FL}";  fi
     if [ "$S2" = "threshold" ];      then S2SUF=""; else S2SUF="_s2${S2}"; fi
     if [ "$TH" = "0.99" ];           then THSUF=""; else THSUF="_th${TH}"; fi
-    if [ "$FA" = "repick" ];         then ASUF="";  else ASUF="_${FA}";    fi
+    if [ "$FA" = "stage2" ];         then ASUF="";  else ASUF="_${FA}";    fi
     if [ "$FB" = "jail_resample" ];  then FSUF="";  else FSUF="_fb${FB}";  fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${PSUF}_15s ;;
