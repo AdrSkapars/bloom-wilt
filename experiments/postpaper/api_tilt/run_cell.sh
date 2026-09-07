@@ -122,13 +122,15 @@ case "$ARM" in
       export BLOOM_API_ADAPTIVE=1 BLOOM_API_ALPHA0=$A0 BLOOM_API_ALPHA_K=$AK
       ADSUF="_a${A0}k${AK}"
     else ADSUF=""; fi
+    ST="${BLOOM_API_SAMPLE_TEMP:-0}"
+    if [ "$ST" = "0" ]; then STSUF=""; else STSUF="_st${ST}"; export BLOOM_API_SAMPLE_TEMP=$ST; fi
     TE="${BLOOM_API_TARGET_EVERY:-0}"
     if [ "$TE" = "0" ]; then TESUF=""; else TESUF="_te${TE}"; export BLOOM_API_TARGET_EVERY=$TE; fi
     DET="${BLOOM_API_DET_FALLBACK:-1}"
     export BLOOM_API_DET_FALLBACK=$DET
     if [ "$DET" = "1" ]; then DSUF=""; else DSUF="_nodet"; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
-    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${TESUF}${ADSUF}${DSUF}${PSUF}_15s ;;
+    export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${TESUF}${ADSUF}${STSUF}${DSUF}${PSUF}_15s ;;
   *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
 esac
 

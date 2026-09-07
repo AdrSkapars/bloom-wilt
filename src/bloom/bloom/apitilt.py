@@ -637,6 +637,13 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # so interleaving trades behaviour for plausibility at a rate set by N -- a coarser
     # version of spending a plausibility budget, with the spend spread uniformly.
     target_every = int(jail_runtime_cfg.get("api_target_every", 0) or 0)
+    # Emit a DRAW from the mixture scores rather than their argmax, proportional to
+    # score**(1/sample_temp). 0 keeps the argmax. Sharpening matters: an unsharpened draw
+    # (T=1) is a coin flip wherever the two contexts disagree and previously tripled the
+    # share of tokens the target rates under 10%, while T<=0.2 recovered most of that. The
+    # point of sampling is round-to-round diversity for pools and post-run selection, which
+    # a deterministic decode cannot provide.
+    sample_temp = float(jail_runtime_cfg.get("api_sample_temp", 0.0) or 0.0)
     # ADAPTIVE WEIGHT (adaptive=True). The union score is a convex mixture
     #     score(x) = alpha*p_target(x) + (1-alpha)*p_elicited(x)
     # and alpha is set per position from the measured disagreement q:
@@ -767,9 +774,28 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 # Resolve the mixture argmax BEFORE the dispatch, so that a candidate list
                 # emptied by the floor routes to stage 2 rather than falling through with a
                 # stale pick.
+                def _pick_from(cands):
+                    """Argmax, or a sharpened draw when sample_temp > 0."""
+                    if not cands:
+                        return None
+                    if sample_temp <= 0.0:
+                        return max(cands, key=lambda x: x[1])[0]
+                    # Renormalise to the largest weight before the power so a small
+                    # temperature cannot underflow every candidate to zero.
+                    _wmax = max(w for _, w in cands) or 1.0
+                    _e = 1.0 / sample_temp
+                    _d = [(t, (w / _wmax) ** _e) for t, w in cands]
+                    _tot = sum(w for _, w in _d) or 1.0
+                    _r, _acc = random.random() * _tot, 0.0
+                    for _t, _w in _d:
+                        _acc += _w
+                        if _r <= _acc:
+                            return _t
+                    return _d[-1][0]
+
                 _mixpick = None
                 if _mix:
-                    _mixpick = max(_mix, key=lambda x: x[1])[0]
+                    _mixpick = _pick_from(_mix)
                     # Only reachable when the free bound could not settle it: price the
                     # winner, then drop it or escalate if it fails.
                     while floor > 0.0 and _mixpick is not None and _mixpick not in tmap:
@@ -791,7 +817,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                             _mixpick = None
                             break
                         _mix = [x for x in _mix if x[0] != _mixpick]
-                        _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
+                        _mixpick = _pick_from(_mix)
                 if truncated:
                     break
                 if ((overlap or stage2_mode == "never" or adaptive)
@@ -1003,6 +1029,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f", {ngr} greedy ({100*ngr/max(nt,1):.1f}%)" if ngr else "")
           + (f", adaptive alpha0={alpha0:g} k={alpha_k:g} (mean alpha={asm/max(nt,1):.3f})"
              if adaptive else "")
+          + (f", sample T={sample_temp:g}" if sample_temp > 0.0 else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"mix:{fb_mode}",
