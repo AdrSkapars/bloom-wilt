@@ -584,9 +584,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # outside the target top-k and its logprob is unknown at decode time; target_sample takes
     # the target's own draw, which costs nothing because that call already sampled one.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "jail_resample") or "jail_resample")
-    if fb_mode not in ("jail_resample", "target_sample"):
+    if fb_mode not in ("jail_resample", "jail_descend", "target_sample"):
         raise RuntimeError(f"api_jailbroken_output.fallback={fb_mode!r} unknown "
-                           f"(jail_resample | target_sample)")
+                           f"(jail_resample | jail_descend | target_sample)")
     # MIXTURE weights, in PROBABILITY space over the UNION of the two top-k sets:
     # score = b1*p_target + b2*p_elicited, a side that did not propose a token contributing 0.
     # Unlike a product over the intersection it does not need both contexts to like a token,
@@ -747,7 +747,39 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                     tid = None
                     _forced_t_lp = None
                     _forced_j_lp = None
-                    if (fb_mode == "jail_resample" and floor > 0.0 and tmap
+                    if fb_mode == "jail_descend":
+                        # Walk the ELICITED top-k in its own rank order and emit the first
+                        # candidate the target prices at or above the floor -- argmax, then
+                        # second, and so on. Deterministic, so unlike the resample the same
+                        # position resolves identically every run and the trigger is the only
+                        # stochastic element left in the decode. Cost is at most k prices
+                        # rather than up to fb_tries draws plus a price each.
+                        _tmin = (min(math.exp(v) for v in tmap.values()) * 100.0) if tmap else 0.0
+                        for _s, _slp in jr["top"]:
+                            _cid = res.id_of(_s)
+                            if _cid is None:
+                                continue
+                            if _s in tmap:
+                                _tlp = tmap[_s]          # already priced, no call
+                            elif floor > 0.0 and _tmin < floor:
+                                continue                 # free bound: cannot clear the floor
+                            else:
+                                n_resamples += 1         # one cand_logprob probe
+                                _tlp = client.cand_logprob(t_ids, _cid)
+                            if floor <= 0.0 or math.exp(_tlp) * 100.0 >= floor:
+                                tid, _forced_t_lp, _forced_j_lp = _cid, _tlp, _slp
+                                break
+                        if tid is None:
+                            # The whole elicited top-k is below the floor; fall back to a
+                            # floored target draw exactly as the resample does.
+                            n_floored += 1
+                            _fs = client.floored_target_sample(
+                                t_ids, top_k, temperature, floor,
+                                math.exp(max(tmap.values())) if tmap else 0.0, aff + "-t")
+                            tid = _fs["sampled_id"]
+                            _forced_t_lp = tmap.get(_fs["sampled_str"], float("nan"))
+                            _forced_j_lp = jmap.get(_fs["sampled_str"])
+                    elif (fb_mode == "jail_resample" and floor > 0.0 and tmap
                             and sum(1 for _lp in tmap.values()
                                     if math.exp(_lp) * 100.0 >= floor) <= 1):
                         # The target's top-k is sorted, so if at most one member clears the
@@ -882,7 +914,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           f"{nf} stage-2 ({100*nf/max(nt,1):.2f}%), {nu} unresolved "
           f"({100*nu/max(nt,1):.2f}%)"
           + (f", {nfl} floored ({100*nfl/max(nt,1):.2f}%)" if floor > 0 else "")
-          + (f", {nrs} resamples" if nrs else "")
+          + (f", {nrs} {'probes' if fb_mode == 'jail_descend' else 'resamples'}" if nrs else "")
           + (f", floor={floor:g} ({nmd} dropped, {nmc} priced)" if floor > 0.0 else "")
           + (f", stage2={stage2_mode} ({nem} empty, mean q={qsm/max(nt,1):.3f})"
              if stage2_mode in ("disagree", "threshold") else "")
