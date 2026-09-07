@@ -647,9 +647,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # exactly what the stage-2 branch does today, so the branch is not needed. k sets how
     # sharply control transfers: large k holds alpha at alpha0 until q approaches 1 (the
     # current threshold behaviour), small k hands over early and in proportion.
-    adaptive = bool(jail_runtime_cfg.get("api_adaptive", False))
+    adaptive = bool(jail_runtime_cfg.get("api_adaptive", True))
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.5))
-    alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 1.0) or 1.0)
+    alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"api_jailbroken_output.alpha0={alpha0!r} must be in [0, 1]")
     if adaptive and alpha_k <= 0.0:
@@ -794,9 +794,12 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                         _mixpick = max(_mix, key=lambda x: x[1])[0] if _mix else None
                 if truncated:
                     break
-                if (overlap or stage2_mode == "never") and not _stage2 and _mixpick is not None:
+                if ((overlap or stage2_mode == "never" or adaptive)
+                        and not _stage2 and _mixpick is not None):
                     # The union is scored everywhere, but stage 1 only OWNS a position when
-                    # the two top-k sets actually intersect (or stage 2 is off). A disjoint
+                    # the two top-k sets actually intersect -- unless stage 2 is off, or the
+                    # adaptive weight is in charge, in which case q=1 drives alpha to 0 and
+                    # the union argmax IS the elicited top-1, so a disjoint
                     # position routes to the fallback below, which is where the behaviour
                     # that neither context agrees on has to come from.
                     pick = _mixpick

@@ -116,9 +116,9 @@ case "$ARM" in
     if [ "$TH" = "0.95" ];           then THSUF=""; else THSUF="_th${TH}"; fi
     if [ "$FA" = "stage2" ];         then ASUF="";  else ASUF="_${FA}";    fi
     if [ "$FB" = "jail_descend" ];   then FSUF="";  else FSUF="_fb${FB}";  fi
-    AD="${BLOOM_API_ADAPTIVE:-0}"
+    AD="${BLOOM_API_ADAPTIVE:-1}"
     if [ "$AD" = "1" ]; then
-      A0="${BLOOM_API_ALPHA0:-0.5}"; AK="${BLOOM_API_ALPHA_K:-1}"
+      A0="${BLOOM_API_ALPHA0:-0.5}"; AK="${BLOOM_API_ALPHA_K:-10}"
       export BLOOM_API_ADAPTIVE=1 BLOOM_API_ALPHA0=$A0 BLOOM_API_ALPHA_K=$AK
       ADSUF="_a${A0}k${AK}"
     else ADSUF=""; fi
