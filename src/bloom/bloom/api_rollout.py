@@ -98,6 +98,9 @@ def run_rollout_api(
         "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.95) or 0.95),
         "api_det_fallback": bool(jail_cfg.get("det_fallback", True)),
         "api_target_every": int(jail_cfg.get("target_every", 0) or 0),
+        "api_adaptive": bool(jail_cfg.get("adaptive", False)),
+        "api_alpha0": float(jail_cfg.get("alpha0", 0.5)),
+        "api_alpha_k": float(jail_cfg.get("alpha_k", 1.0) or 1.0),
     }
 
     if evaluator_model_id.startswith("local/"):

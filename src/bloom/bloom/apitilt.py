@@ -637,6 +637,23 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # so interleaving trades behaviour for plausibility at a rate set by N -- a coarser
     # version of spending a plausibility budget, with the spend spread uniformly.
     target_every = int(jail_runtime_cfg.get("api_target_every", 0) or 0)
+    # ADAPTIVE WEIGHT (adaptive=True). The union score is a convex mixture
+    #     score(x) = alpha*p_target(x) + (1-alpha)*p_elicited(x)
+    # and alpha is set per position from the measured disagreement q:
+    #     alpha(q) = alpha0 * (1 - q**k)
+    # Only the RATIO of the two weights affects an argmax, so this is the b1/b2 pair with
+    # its redundant degree of freedom removed: alpha0 = b1/(b1+b2), and b2=1 <-> alpha0=0.5.
+    # At q=1 (the two top-k sets disjoint) alpha=0, i.e. pure elicited control -- which is
+    # exactly what the stage-2 branch does today, so the branch is not needed. k sets how
+    # sharply control transfers: large k holds alpha at alpha0 until q approaches 1 (the
+    # current threshold behaviour), small k hands over early and in proportion.
+    adaptive = bool(jail_runtime_cfg.get("api_adaptive", False))
+    alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.5))
+    alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 1.0) or 1.0)
+    if adaptive and not (0.0 <= alpha0 <= 1.0):
+        raise RuntimeError(f"api_jailbroken_output.alpha0={alpha0!r} must be in [0, 1]")
+    if adaptive and alpha_k <= 0.0:
+        raise RuntimeError(f"api_jailbroken_output.alpha_k={alpha_k!r} must be > 0")
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
@@ -665,6 +682,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
         n_resamples = 0
         n_shortcut = 0
         n_empty = 0
+        alpha_sum = 0.0      # mean adaptive alpha, for the run summary
         n_greedy = 0         # positions handed to the target argmax by target_every
         n_mixdrop = 0        # candidates removed by the stage-1 floor
         n_mixcalls = 0       # cand_logprob calls the free bound could not avoid
@@ -708,14 +726,27 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 _te = sum(math.exp(lp) for _, lp in jr["top"]) or 1.0
                 _q = sum(math.exp(lp) for _s, lp in jr["top"] if _s not in _ov) / _te
                 q_sum += _q
-                _stage2 = False if stage2_mode == "never" else (_q >= stage2_theta)
+                # Under the adaptive weight, q=1 already drives alpha to 0 and the argmax
+                # becomes the elicited top-1 among floor-passing candidates -- which is what
+                # stage 2 emits -- so no separate branch fires.
+                _stage2 = False if (adaptive or stage2_mode == "never") else (_q >= stage2_theta)
                 # Score over the UNION, in probability space.
                 _union = {}
                 for _t, _lp in tr["top"]:
                     _union[_t] = [math.exp(_lp), 0.0]
                 for _t, _lp in jr["top"]:
                     _union.setdefault(_t, [0.0, 0.0])[1] = math.exp(_lp)
-                _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
+                if adaptive:
+                    # Clamped away from exactly 0 so the target's own ordering still breaks
+                    # ties among candidates the elicited context never proposed -- without
+                    # it, at q=1 every target-only candidate scores 0 and the pick is
+                    # arbitrary rather than the target's top-1.
+                    _alpha = max(alpha0 * (1.0 - _q ** alpha_k), 1e-9)
+                    alpha_sum += _alpha
+                    _mix = [(t, _alpha * xy[0] + (1.0 - _alpha) * xy[1])
+                            for t, xy in _union.items()]
+                else:
+                    _mix = [(t, ob1 * xy[0] + ob2 * xy[1]) for t, xy in _union.items()]
                 if floor > 0.0:
                     _tmin = min(math.exp(v) for v in tmap.values()) * 100.0 if tmap else 0.0
                     # Free rejection of every elicited-only candidate when the target's own
@@ -928,7 +959,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_fallback": n_fallback, "n_unres": n_unres,
                 "n_floored": n_floored, "n_resamples": n_resamples,
-                "n_shortcut": n_shortcut, "n_greedy": n_greedy,
+                "n_shortcut": n_shortcut, "n_greedy": n_greedy, "alpha_sum": alpha_sum,
                 "n_empty": n_empty, "q_sum": q_sum,
                 "n_mixdrop": n_mixdrop, "n_mixcalls": n_mixcalls,
                 "truncated": truncated}
@@ -946,6 +977,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     nrs = sum(o.pop("n_resamples", 0) for o in out)
     nsc = sum(o.pop("n_shortcut", 0) for o in out)
     ngr = sum(o.pop("n_greedy", 0) for o in out)
+    asm = sum(o.pop("alpha_sum", 0.0) for o in out)
     nem = sum(o.pop("n_empty", 0) for o in out)
     qsm = sum(o.pop("q_sum", 0.0) for o in out)
     nmd = sum(o.pop("n_mixdrop", 0) for o in out)
@@ -966,6 +998,8 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
           + (f" theta={stage2_theta:g}" if stage2_mode == "threshold" else "")
           + (f", {nsc} argmax-shortcut" if nsc else "")
           + (f", {ngr} greedy ({100*ngr/max(nt,1):.1f}%)" if ngr else "")
+          + (f", adaptive alpha0={alpha0:g} k={alpha_k:g} (mean alpha={asm/max(nt,1):.3f})"
+             if adaptive else "")
           + (f"  |  {ncut}/{len(out)} scenarios CUT SHORT by API failure"
              f" -- e.g. {next(x for x in trunc if x)[:110]}" if ncut else ""), flush=True)
     _record_cost(client, f"mix:{fb_mode}",
