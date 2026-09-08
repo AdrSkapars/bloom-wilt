@@ -57,15 +57,24 @@ def _q_of(t_top, j_top, metric: str) -> float:
     return min(1.0, max(0.0, q))
 
 
-def _resolve_one(res, t_top, j_top, alpha0, alpha_k, floor, metric, sample_temp):
+def _resolve_one(res, t_top, j_top, alpha0, alpha_k, floor, metric, sample_temp,
+                 alpha_fixed=None):
     """The single-position mixture rule, over the union of two top-k lists already in hand.
 
     Returns (token_id, target_lp, elicited_lp), or None if the floor leaves no candidate.
     """
     tmap = dict(t_top)
     jmap = dict(j_top)
-    q = _q_of(t_top, j_top, metric)
-    alpha = max(alpha0 * (1.0 - q ** alpha_k), 1e-9)
+    if alpha_fixed is not None:
+        # An intervention is triggered precisely because the contexts disagree here, so
+        # re-deriving alpha from the schedule is self-defeating: at theta=0.5 with k=10 the
+        # schedule returns alpha=0.599, i.e. the position is resolved almost entirely by the
+        # target -- the very context whose disagreement triggered the intervention. A fixed
+        # low alpha (high elicited weight) makes the intervention actually intervene.
+        alpha = max(float(alpha_fixed), 1e-9)
+    else:
+        q = _q_of(t_top, j_top, metric)
+        alpha = max(alpha0 * (1.0 - q ** alpha_k), 1e-9)
     union = {}
     for s, lp in t_top:
         union[s] = [math.exp(lp), 0.0]
@@ -143,6 +152,11 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         raise RuntimeError("api_jailbroken_output.spec_draft=%r unknown (elicited | target)"
                            % draft_side)
     theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
+    # Alpha to use AT an intervention, overriding the schedule. <0 keeps the schedule.
+    # 0 means the intervened position is resolved by the elicited context alone (subject to
+    # the floor), which is what "intervene" ought to mean.
+    a_int = float(jail_runtime_cfg.get("api_spec_intervene_alpha", -1.0))
+    a_int = None if a_int < 0.0 else a_int
 
     def _one(job):
         idx, tm = job
@@ -218,7 +232,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             # leaves every later draft conditioned on a context that no longer exists.
             n_rewind += 1
             r = _resolve_one(res, _ttop[acc], _jtop[acc],
-                             alpha0, alpha_k, floor, metric, sample_temp)
+                             alpha0, alpha_k, floor, metric, sample_temp, a_int)
             if r is None:
                 # The floor left nothing at this position. The target's own top-1 is always
                 # admissible and keeps the loop moving.
