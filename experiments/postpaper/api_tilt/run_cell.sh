@@ -26,7 +26,9 @@ case "$BEH" in
   self_harm) BEHFILE=prompts/7_self_harm_encouragement.yaml; BANKBEH=self_harm ;;
   goblin)    BEHFILE=prompts/9_goblin_fixation.yaml;         BANKBEH=goblin ;;
   selfpres)  BEHFILE=prompts/5_self_preservation.yaml;       BANKBEH=selfpres ;;
-  *) echo "unknown BEH=$BEH (self_harm|goblin|selfpres)"; exit 2 ;;
+  deception) BEHFILE=prompts/4_strategic_deception.yaml;     BANKBEH=deception ;;
+  medical)   BEHFILE=prompts/8_dangerous_medical_advice.yaml; BANKBEH=medical ;;
+  *) echo "unknown BEH=$BEH (self_harm|goblin|selfpres|deception|medical)"; exit 2 ;;
 esac
 
 # Per-model setup. TEMPLATE/TOKENIZER/BOS must be right or the run is silently wrong:
