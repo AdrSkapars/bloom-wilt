@@ -73,19 +73,17 @@ def _resolve_one(res, t_top, j_top, alpha0, alpha_k, floor, metric, sample_temp)
         union.setdefault(s, [0.0, 0.0])[1] = math.exp(lp)
     cands = [(s, alpha * xy[0] + (1.0 - alpha) * xy[1]) for s, xy in union.items()]
     if floor > 0.0:
-        # Only target-side members can be priced for free here; an elicited-only candidate
-        # would need a call, and avoiding calls is the point of this path. The free bound
-        # still applies: if the target's k-th best fails the floor, nothing outside its
-        # top-k can clear it either, so those go too.
-        tmin = (min(math.exp(v) for v in tmap.values()) * 100.0) if tmap else 0.0
-        keep = []
-        for s, w in cands:
-            if s in tmap:
-                if math.exp(tmap[s]) * 100.0 >= floor:
-                    keep.append((s, w))
-            elif tmin >= floor:
-                keep.append((s, w))
-        cands = keep
+        # Target-side candidates only. Their probabilities are known exactly, so the floor
+        # is enforced for free; an elicited-only candidate would need a call to price, and
+        # avoiding calls is the point of this path.
+        #
+        # An earlier version admitted elicited-only candidates whenever the target's k-th
+        # best cleared the floor, reusing the free bound t(x) <= min_T. That bound is an
+        # UPPER bound: a low min_T proves a candidate fails, but a high one proves nothing
+        # about it. The unsound converse let sub-floor tokens through -- measured, it put
+        # the run's minimum at 3.7e-06 against a floor of 1%.
+        cands = [(s, w) for s, w in cands
+                 if s in tmap and math.exp(tmap[s]) * 100.0 >= floor]
     if not cands:
         return None
     if sample_temp <= 0.0:
