@@ -1,0 +1,3 @@
+{"t": 1788869795.0505638, "tag": "spec:target:block10", "calls": 412, "retries": 0, "prompt_tok": 59036, "gen_tok": 1696, "secs": 59.23, "gen_tokens": 1348, "n_calls": 367, "n_blocks": 176, "n_accept": 1301, "n_rewind": 47, "n_scenarios": 15}
+{"t": 1788869873.918372, "tag": "spec:target:block10", "calls": 838, "retries": 0, "prompt_tok": 194743, "gen_tok": 3454, "secs": 54.93, "gen_tokens": 1635, "n_calls": 381, "n_blocks": 183, "n_accept": 1618, "n_rewind": 17, "n_scenarios": 15}
+{"t": 1788870020.8558104, "tag": "spec:target:block10", "calls": 1244, "retries": 0, "prompt_tok": 398010, "gen_tok": 5101, "secs": 46.93, "gen_tokens": 1612, "n_calls": 361, "n_blocks": 173, "n_accept": 1608, "n_rewind": 4, "n_scenarios": 15}

@@ -166,6 +166,16 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     # target-drafted one that pulled the context back. A burst keeps the steering in place
     # for a run of consecutive tokens, which is the thing those failures say is needed.
     burst = int(jail_runtime_cfg.get("api_spec_burst", 0) or 0)
+    # FLIP. Instead of a fixed burst length, let each side run until ITS OWN stop condition
+    # fires and then hand over: draft from the target until disagreement reaches
+    # stage2_theta, draft from the elicited context until the target prices a token below
+    # `floor`, and alternate. Both accept tests already exist; this just makes the side a
+    # state that toggles on every intervention rather than a timer.
+    #
+    # The fixed burst is arbitrary in exactly the place this is not: a burst of 10 ends
+    # whether or not the steering is still productive, whereas the elicited phase here ends
+    # precisely when it stops being plausible.
+    flip = bool(jail_runtime_cfg.get("api_spec_flip", False))
 
     def _one(job):
         idx, tm = job
@@ -179,11 +189,15 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
 
         gen, t_lps, j_lps = [], [], []
         burst_left = 0
+        cur_side = draft_side
         n_calls = n_blocks = n_accept = n_rewind = n_stall = n_burst = 0
         truncated = ""
         while len(gen) < int(max_tokens):
             n = min(block, int(max_tokens) - len(gen))
-            side = "elicited" if (draft_side == "elicited" or burst_left > 0) else "target"
+            if flip:
+                side = cur_side
+            else:
+                side = "elicited" if (draft_side == "elicited" or burst_left > 0) else "target"
             _dids, _vids = (j_ids, t_ids) if side == "elicited" else (t_ids, j_ids)
             try:
                 blk = client.gen_block(_dids, n, top_k, draft_temp,
@@ -244,6 +258,10 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             # hand, and throw the rest of the block away -- emitting a different token
             # leaves every later draft conditioned on a context that no longer exists.
             n_rewind += 1
+            if flip:
+                # Hand over: whichever side just failed its own test yields to the other.
+                cur_side = "elicited" if side == "target" else "target"
+                n_burst += 1
             if burst > 0:
                 if burst_left == 0:
                     n_burst += 1
@@ -316,6 +334,8 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         msg += ", %d stalls" % ns
     if burst:
         msg += ", %d bursts (len %d)" % (nbu, burst)
+    if flip:
+        msg += ", %d flips" % nbu
     if ncut:
         msg += ("  |  %d/%d scenarios CUT SHORT by API failure -- e.g. %s"
                 % (ncut, len(out), next(x for x in trunc if x)[:110]))
