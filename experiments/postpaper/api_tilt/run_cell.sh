@@ -134,7 +134,14 @@ case "$ARM" in
     if [ "$DET" = "1" ]; then DSUF=""; else DSUF="_nodet"; fi
     if [ "${BLOOM_API_JAIL_PREFILL:-1}" = "0" ]; then PSUF="_nopf"; else PSUF=""; fi
     export BLOOM_FOLDER=${ROOT}/api_mix${BSUF}${LSUF}${S2SUF}${THSUF}${ASUF}${FSUF}${TESUF}${QSUF}${ADSUF}${STSUF}${DSUF}${PSUF}_15s ;;
-  *) echo "usage: run_cell.sh [vanilla|elicited|overlap] [rounds]"; exit 2 ;;
+  spec)
+    BL="${BLOOM_API_SPEC_BLOCK:-10}"
+    FL="${BLOOM_API_FLOOR:-1e-05}"
+    export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=spec
+    export BLOOM_API_SPEC_BLOCK=$BL BLOOM_API_FLOOR=$FL
+    if [ "$FL" = "1e-05" ]; then LSUF=""; else LSUF="_fl${FL}"; fi
+    export BLOOM_FOLDER=${ROOT}/api_spec_b${BL}${LSUF}_15s ;;
+  *) echo "usage: run_cell.sh [vanilla|elicited|overlap|spec] [rounds]"; exit 2 ;;
 esac
 
 # RUN_TAG appends a suffix to the folder so an identical config can be repeated

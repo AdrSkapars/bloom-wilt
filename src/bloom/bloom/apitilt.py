@@ -453,6 +453,57 @@ class ApiTiltTarget:
                 "lp": [float(v) for v in list(lp.get("token_logprobs") or [])[-n:]],
                 "top": top}
 
+    def gen_block(self, ids: List[int], n: int, top_k: int = 5, temperature: float = 1.0,
+                  affinity: Optional[str] = None) -> List[Dict]:
+        """Generate `n` tokens in ONE call, with the top-k alternatives at every position.
+
+        The block counterpart of next_topk: same request shape, max_tokens=n instead of 1.
+        Returns one entry per generated position, so a single call yields the drafting
+        context's distribution at all n positions rather than just the first.
+        """
+        r = self._post({"model": self.model, "prompt": list(ids), "max_tokens": int(n),
+                        "temperature": float(temperature), "top_p": 1.0, "top_k": 0,
+                        "logprobs": int(top_k), "echo": False}, affinity=affinity)
+        ch = r["choices"][0]
+        lp = ch.get("logprobs") or {}
+        u = r.get("usage") or {}
+        self.n_prompt_tokens += int(u.get("prompt_tokens") or 0)
+        self.n_gen_tokens += int(u.get("completion_tokens") or 0)
+        out = []
+        tids = list(lp.get("token_ids") or [])
+        toks = list(lp.get("tokens") or [])
+        lps = list(lp.get("token_logprobs") or [])
+        tls = list(lp.get("top_logprobs") or [])
+        for i in range(len(tids)):
+            out.append({"id": int(tids[i]),
+                        "str": toks[i] if i < len(toks) else "",
+                        "lp": float(lps[i]) if i < len(lps) else float("nan"),
+                        "top": sorted(((tls[i] if i < len(tls) else {}) or {}).items(),
+                                      key=lambda kv: -kv[1])})
+        return out
+
+    def score_block(self, prefix_ids: List[int], cont_ids: List[int],
+                    top_k: int = 5) -> Dict:
+        """Teacher-force `cont_ids` after `prefix_ids` in ONE call, with top-k per position.
+
+        Like score_ids_topk but takes the prefix as IDS, which is what the speculative loop
+        carries. `top[i]` is the scoring context's own distribution at position i, given the
+        drafted tokens before it -- so verifying a block also hands back everything the
+        single-position rule needs at whichever position turns out to fail.
+        """
+        n = len(cont_ids)
+        if n == 0:
+            return {"lp": [], "top": []}
+        lp = self._echo(list(prefix_ids) + list(cont_ids), logprobs=int(top_k))
+        ids = list(lp.get("token_ids") or [])
+        if len(ids) != len(prefix_ids) + n or ids[-n:] != list(cont_ids):
+            raise RuntimeError(
+                f"api_spec score_block: provider did not echo the supplied ids back "
+                f"(sent {len(prefix_ids)}+{n}, got {len(ids)}).")
+        tl = list(lp.get("top_logprobs") or [])
+        return {"lp": [float(v) for v in list(lp.get("token_logprobs") or [])[-n:]],
+                "top": [sorted((d or {}).items(), key=lambda kv: -kv[1]) for d in tl[-n:]]}
+
     def next_topk(self, ids: List[int], top_k: int = 5, temperature: float = 1.0,
                   affinity: Optional[str] = None,
                   exclude_ids: Optional[List[int]] = None,
@@ -1092,6 +1143,11 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
     the later top-k tilt approximation).
     """
     _rule = str(jail_runtime_cfg.get("api_rule", "corner") or "corner")
+    if _rule == "spec":
+        # Speculative block decode; separate module, same client and resolver.
+        from .apispec import _driven_spec
+        return _driven_spec(handle, jail_runtime_cfg, target_msgs_batch,
+                            max_tokens, temperature, no_think_target)
     if _rule == "overlap":
         return _driven_overlap(handle, jail_runtime_cfg, target_msgs_batch,
                                max_tokens, temperature, no_think_target)
