@@ -122,6 +122,14 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
     sample_temp = float(jail_runtime_cfg.get("api_sample_temp", 0.05) or 0.05)
+    # Temperature for the DRAFT block. <0 means "use the rollout temperature", i.e. draw as
+    # the elicited context would on its own. 0 drafts its greedy continuation instead, which
+    # should raise acceptance -- a greedy token is the elicited context's most probable, and
+    # the two contexts agree more often on high-probability tokens than on tail ones -- at
+    # the cost of the round-to-round diversity a sampled draft provides.
+    draft_temp = float(jail_runtime_cfg.get("api_spec_draft_temp", -1.0))
+    if draft_temp < 0.0:
+        draft_temp = float(temperature)
 
     def _one(job):
         idx, tm = job
@@ -139,7 +147,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         while len(gen) < int(max_tokens):
             n = min(block, int(max_tokens) - len(gen))
             try:
-                blk = client.gen_block(j_ids, n, top_k, temperature, aff + "-j")
+                blk = client.gen_block(j_ids, n, top_k, draft_temp, aff + "-j")
                 n_calls += 1
                 if not blk:
                     break
@@ -232,9 +240,10 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
-    msg = ("  [api_spec block=%d floor=%g] %d tokens in %d calls (%.2f tok/call, vs 0.50 for "
+    msg = ("  [api_spec block=%d floor=%g draft_T=%g] %d tokens in %d calls (%.2f tok/call, vs 0.50 for "
            "the single-position rule), %d blocks, %d accepted (%.1f%% of tokens), %d rewinds"
-           % (block, floor, nt, nc, nt / max(nc, 1), nb, na, 100.0 * na / max(nt, 1), nr))
+           % (block, floor, draft_temp, nt, nc, nt / max(nc, 1), nb, na,
+              100.0 * na / max(nt, 1), nr))
     if ns:
         msg += ", %d stalls" % ns
     if ncut:
