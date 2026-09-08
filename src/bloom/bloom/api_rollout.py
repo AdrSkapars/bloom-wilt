@@ -101,6 +101,7 @@ def run_rollout_api(
         "api_spec_draft_temp": float(jail_cfg.get("spec_draft_temp", -1.0)),
         "api_spec_draft": str(jail_cfg.get("spec_draft", "elicited") or "elicited"),
         "api_spec_intervene_alpha": float(jail_cfg.get("spec_intervene_alpha", -1.0)),
+        "api_spec_burst": int(jail_cfg.get("spec_burst", 0) or 0),
         "api_det_fallback": bool(jail_cfg.get("det_fallback", True)),
         "api_target_every": int(jail_cfg.get("target_every", 0) or 0),
         "api_sample_temp": float(jail_cfg.get("sample_temp", 0.05) or 0.05),

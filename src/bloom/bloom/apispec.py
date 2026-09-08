@@ -157,6 +157,15 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     # the floor), which is what "intervene" ought to mean.
     a_int = float(jail_runtime_cfg.get("api_spec_intervene_alpha", -1.0))
     a_int = None if a_int < 0.0 else a_int
+    # BURST. After an intervention, keep drafting from the ELICITED context for this many
+    # tokens before reverting to the base side. 0 disables.
+    #
+    # Isolated interventions do not compound: target_every=2 steered half of all positions
+    # and collapsed to vanilla, and a target draft with alpha=0 at 235 intervened positions
+    # moved presence by 5. In both, every steered token was immediately followed by a
+    # target-drafted one that pulled the context back. A burst keeps the steering in place
+    # for a run of consecutive tokens, which is the thing those failures say is needed.
+    burst = int(jail_runtime_cfg.get("api_spec_burst", 0) or 0)
 
     def _one(job):
         idx, tm = job
@@ -169,14 +178,16 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         j_ids = client.prefix_ids(j_prefix)
 
         gen, t_lps, j_lps = [], [], []
-        n_calls = n_blocks = n_accept = n_rewind = n_stall = 0
+        burst_left = 0
+        n_calls = n_blocks = n_accept = n_rewind = n_stall = n_burst = 0
         truncated = ""
         while len(gen) < int(max_tokens):
             n = min(block, int(max_tokens) - len(gen))
-            _dids, _vids = (j_ids, t_ids) if draft_side == "elicited" else (t_ids, j_ids)
+            side = "elicited" if (draft_side == "elicited" or burst_left > 0) else "target"
+            _dids, _vids = (j_ids, t_ids) if side == "elicited" else (t_ids, j_ids)
             try:
                 blk = client.gen_block(_dids, n, top_k, draft_temp,
-                                       aff + ("-j" if draft_side == "elicited" else "-t"))
+                                       aff + ("-j" if side == "elicited" else "-t"))
                 n_calls += 1
                 if not blk:
                     break
@@ -189,7 +200,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             n_blocks += 1
 
             # Per-position target/elicited views, whichever side drafted.
-            if draft_side == "elicited":
+            if side == "elicited":
                 _tl = list(sc["lp"])              # target logprobs: from the verify call
                 _jl = [b["lp"] for b in blk]      # elicited logprobs: from the draft call
                 _ttop = list(sc["top"])
@@ -208,7 +219,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
                 if tok in res.stop_ids:
                     hit_stop = True
                     break
-                if draft_side == "elicited":
+                if side == "elicited":
                     if floor > 0.0 and math.exp(_tl[i]) * 100.0 < floor:
                         break
                 else:
@@ -222,6 +233,8 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             t_ids = t_ids + ids[:acc]
             j_ids = j_ids + ids[:acc]
             n_accept += acc
+            if burst_left > 0:
+                burst_left = max(0, burst_left - acc)
             if hit_stop:
                 break
             if acc == len(ids):
@@ -231,6 +244,10 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             # hand, and throw the rest of the block away -- emitting a different token
             # leaves every later draft conditioned on a context that no longer exists.
             n_rewind += 1
+            if burst > 0:
+                if burst_left == 0:
+                    n_burst += 1
+                burst_left = burst
             r = _resolve_one(res, _ttop[acc], _jtop[acc],
                              alpha0, alpha_k, floor, metric, sample_temp, a_int)
             if r is None:
@@ -253,6 +270,8 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             j_lps.append(jlp if jlp is not None else float("nan"))
             t_ids = t_ids + [tid]
             j_ids = j_ids + [tid]
+            if burst_left > 0:
+                burst_left = max(0, burst_left - 1)
 
         # A rewind can emit a token outside the target's top-k, whose target logprob is
         # unknown at decode time -- storing NaN there poisoned the whole arithmetic mean.
@@ -270,7 +289,8 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
                 "best_token_probs": [(math.exp(l) * 100 if l == l else float("nan")) for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
                 "n_calls": n_calls, "n_blocks": n_blocks, "n_accept": n_accept,
-                "n_rewind": n_rewind, "n_stall": n_stall, "truncated": truncated}
+                "n_rewind": n_rewind, "n_stall": n_stall, "n_burst": n_burst,
+                "truncated": truncated}
 
     _t0 = time.time()
     jobs = list(enumerate(target_msgs_batch))
@@ -284,6 +304,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     na = sum(o.pop("n_accept") for o in out)
     nr = sum(o.pop("n_rewind") for o in out)
     ns = sum(o.pop("n_stall") for o in out)
+    nbu = sum(o.pop("n_burst") for o in out)
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
@@ -293,6 +314,8 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
               100.0 * na / max(nt, 1), nr))
     if ns:
         msg += ", %d stalls" % ns
+    if burst:
+        msg += ", %d bursts (len %d)" % (nbu, burst)
     if ncut:
         msg += ("  |  %d/%d scenarios CUT SHORT by API failure -- e.g. %s"
                 % (ncut, len(out), next(x for x in trunc if x)[:110]))
