@@ -1,0 +1,1 @@
+{"t": 1788860717.0535777, "tag": "spec:block10", "calls": 688, "retries": 0, "prompt_tok": 93754, "gen_tok": 3234, "secs": 58.64, "gen_tokens": 1114, "n_calls": 658, "n_blocks": 329, "n_accept": 833, "n_rewind": 285, "n_scenarios": 15}

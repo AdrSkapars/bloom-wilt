@@ -201,6 +201,18 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             t_ids = t_ids + [tid]
             j_ids = j_ids + [tid]
 
+        # A rewind can emit a token outside the target's top-k, whose target logprob is
+        # unknown at decode time -- storing NaN there poisoned the whole arithmetic mean.
+        # One echo over the finished reply prices every token exactly, for one call per
+        # scenario against the ~250 the block loop already spends.
+        if gen:
+            try:
+                _rs = client.score_block(client.prefix_ids(t_prefix), gen, 1)
+                n_calls += 1
+                if len(_rs["lp"]) == len(gen):
+                    t_lps = list(_rs["lp"])
+            except RuntimeError:
+                pass    # keep the decode-time values; some may be NaN
         return {"best_text": _finalize(res, gen), "best_ids": gen,
                 "best_token_probs": [(math.exp(l) * 100 if l == l else float("nan")) for l in t_lps],
                 "best_token_probs_jail": [(math.exp(l) * 100 if l == l else None) for l in j_lps],
