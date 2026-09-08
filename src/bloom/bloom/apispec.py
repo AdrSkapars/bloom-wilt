@@ -130,6 +130,19 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     draft_temp = float(jail_runtime_cfg.get("api_spec_draft_temp", -1.0))
     if draft_temp < 0.0:
         draft_temp = float(temperature)
+    # WHICH CONTEXT DRAFTS.
+    #   elicited -- draft what the jailbroken context wants, accept while the TARGET prices
+    #               it above `floor`. Accepted tokens are elicited picks, so the operating
+    #               point sits near elicited-only and the target holds a veto, not a vote.
+    #   target   -- the mirror: draft the TARGET continuation, accept while the two contexts
+    #               still agree, and intervene where disagreement q reaches stage2_theta.
+    #               Accepted tokens are then target picks, so plausibility is high by
+    #               construction and the intervention RATE becomes the behaviour dial.
+    draft_side = str(jail_runtime_cfg.get("api_spec_draft", "elicited") or "elicited")
+    if draft_side not in ("elicited", "target"):
+        raise RuntimeError("api_jailbroken_output.spec_draft=%r unknown (elicited | target)"
+                           % draft_side)
+    theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
 
     def _one(job):
         idx, tm = job
@@ -146,32 +159,52 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         truncated = ""
         while len(gen) < int(max_tokens):
             n = min(block, int(max_tokens) - len(gen))
+            _dids, _vids = (j_ids, t_ids) if draft_side == "elicited" else (t_ids, j_ids)
             try:
-                blk = client.gen_block(j_ids, n, top_k, draft_temp, aff + "-j")
+                blk = client.gen_block(_dids, n, top_k, draft_temp,
+                                       aff + ("-j" if draft_side == "elicited" else "-t"))
                 n_calls += 1
                 if not blk:
                     break
                 ids = [b["id"] for b in blk]
-                sc = client.score_block(t_ids, ids, top_k)
+                sc = client.score_block(_vids, ids, top_k)
                 n_calls += 1
             except RuntimeError as e:
                 truncated = str(e)
                 break
             n_blocks += 1
 
-            # Longest prefix clearing the floor, stopping at a stop token.
+            # Per-position target/elicited views, whichever side drafted.
+            if draft_side == "elicited":
+                _tl = list(sc["lp"])              # target logprobs: from the verify call
+                _jl = [b["lp"] for b in blk]      # elicited logprobs: from the draft call
+                _ttop = list(sc["top"])
+                _jtop = [b["top"] for b in blk]
+            else:
+                _tl = [b["lp"] for b in blk]      # target logprobs: from the draft call
+                _jl = list(sc["lp"])              # elicited logprobs: from the verify call
+                _ttop = [b["top"] for b in blk]
+                _jtop = list(sc["top"])
+
+            # Longest acceptable prefix, stopping at a stop token. An elicited draft is
+            # accepted while the TARGET finds the token possible; a target draft is accepted
+            # while the two contexts still AGREE.
             acc, hit_stop = 0, False
             for i, tok in enumerate(ids):
                 if tok in res.stop_ids:
                     hit_stop = True
                     break
-                if floor > 0.0 and math.exp(sc["lp"][i]) * 100.0 < floor:
-                    break
+                if draft_side == "elicited":
+                    if floor > 0.0 and math.exp(_tl[i]) * 100.0 < floor:
+                        break
+                else:
+                    if _q_of(_ttop[i], _jtop[i], metric) >= theta:
+                        break
                 acc += 1
             for i in range(acc):
                 gen.append(ids[i])
-                t_lps.append(sc["lp"][i])
-                j_lps.append(blk[i]["lp"])
+                t_lps.append(_tl[i])
+                j_lps.append(_jl[i])
             t_ids = t_ids + ids[:acc]
             j_ids = j_ids + ids[:acc]
             n_accept += acc
@@ -184,19 +217,19 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
             # hand, and throw the rest of the block away -- emitting a different token
             # leaves every later draft conditioned on a context that no longer exists.
             n_rewind += 1
-            r = _resolve_one(res, sc["top"][acc], blk[acc]["top"],
+            r = _resolve_one(res, _ttop[acc], _jtop[acc],
                              alpha0, alpha_k, floor, metric, sample_temp)
             if r is None:
                 # The floor left nothing at this position. The target's own top-1 is always
                 # admissible and keeps the loop moving.
-                ttop = sc["top"][acc]
+                ttop = _ttop[acc]
                 if not ttop:
                     break
                 tid = res.id_of(ttop[0][0])
                 if tid is None:
                     n_stall += 1
                     break
-                tlp, jlp = ttop[0][1], dict(blk[acc]["top"]).get(ttop[0][0])
+                tlp, jlp = ttop[0][1], dict(_jtop[acc]).get(ttop[0][0])
             else:
                 tid, tlp, jlp = r
             if tid in res.stop_ids:
@@ -240,9 +273,9 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     trunc = [o.pop("truncated") for o in out]
     ncut = sum(1 for x in trunc if x)
     nt = sum(len(o["best_ids"]) for o in out)
-    msg = ("  [api_spec block=%d floor=%g draft_T=%g] %d tokens in %d calls (%.2f tok/call, vs 0.50 for "
+    msg = ("  [api_spec draft=%s block=%d floor=%g draft_T=%g] %d tokens in %d calls (%.2f tok/call, vs 0.50 for "
            "the single-position rule), %d blocks, %d accepted (%.1f%% of tokens), %d rewinds"
-           % (block, floor, draft_temp, nt, nc, nt / max(nc, 1), nb, na,
+           % (draft_side, block, floor, draft_temp, nt, nc, nt / max(nc, 1), nb, na,
               100.0 * na / max(nt, 1), nr))
     if ns:
         msg += ", %d stalls" % ns
@@ -250,7 +283,7 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
         msg += ("  |  %d/%d scenarios CUT SHORT by API failure -- e.g. %s"
                 % (ncut, len(out), next(x for x in trunc if x)[:110]))
     print(msg, flush=True)
-    _record_cost(client, "spec:block%d" % block,
+    _record_cost(client, "spec:%s:block%d" % (draft_side, block),
                  {"secs": round(time.time() - _t0, 2), "gen_tokens": nt, "n_calls": nc,
                   "n_blocks": nb, "n_accept": na, "n_rewind": nr, "n_scenarios": len(out)})
     return out
