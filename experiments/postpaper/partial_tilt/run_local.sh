@@ -80,6 +80,12 @@ export BLOOM_PTILT_B2=$B2
 export BLOOM_PTILT_FLOOR="${FLOOR:-0}"      # percent; 0 keeps top-k the ONLY variable
 export BLOOM_API_JAIL_VAR_BATCH="${VAR_BATCH:-15}"
 
+# cfg.target_gpu_id defaults to 1 because the paper's boxes kept the auditor on GPU 0 and the
+# target on GPU 1. With AUDITOR=api there is no local auditor and typically ONE card, so the
+# default asks for a device that does not exist ("invalid device ordinal"). Default to 0 here
+# and let a multi-GPU box override.
+export BLOOM_TARGET_GPU="${TARGET_GPU:-0}"
+
 if [ "$K" = "0" ]; then KSUF="_kfull"; else KSUF="_k${K}"; fi
 if [ "$RULE" = "poe" ]; then RSUF=""; else RSUF="_${RULE}"; fi
 if [ "${FLOOR:-0}" = "0" ]; then FSUF=""; else FSUF="_fl${FLOOR}"; fi
