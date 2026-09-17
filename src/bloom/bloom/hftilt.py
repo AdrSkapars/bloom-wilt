@@ -127,6 +127,31 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
     pe = pe / pe.sum(-1, keepdim=True).clamp_min(1e-12)
     if metric == "tv":
         q = 0.5 * (pt - pe).abs().sum(-1)
+    elif metric == "jsd":
+        # Jensen-Shannon, divided by ln2 so it lands in [0,1]: 0 when the two truncated
+        # distributions coincide, 1 when their supports are disjoint. Symmetric, and unlike a
+        # plain KL it stays finite when one side assigns zero to what the other wants -- which
+        # is the common case here, so KL would be infinite at most positions.
+        m = 0.5 * (pt + pe)
+
+        def _kl(a, b):
+            return (a * (torch.log(a.clamp_min(1e-12)) - torch.log(b.clamp_min(1e-12)))).sum(-1)
+
+        q = (0.5 * _kl(pt, m) + 0.5 * _kl(pe, m)) / math.log(2.0)
+    elif metric == "hellinger":
+        # sqrt(1 - BC), BC = sum sqrt(p_t * p_e) the Bhattacharyya coefficient. Apt for a
+        # PRODUCT rule specifically: BC is exactly the normalising mass of the geometric
+        # mixture at equal weights, so this measures how far the poe product collapses. The
+        # disagreement measure matched to the operator rather than borrowed from elsewhere.
+        bc = (pt.clamp_min(0) * pe.clamp_min(0)).sqrt().sum(-1)
+        q = (1.0 - bc).clamp_min(0.0).sqrt()
+    elif metric == "top1_mismatch":
+        # The crudest measure available: 1 when the two sides disagree about the single most
+        # likely token, 0 otherwise, so mean_q reads directly as "fraction of positions where
+        # the argmaxes differ". A control. If this drives the schedule as well as jsd or
+        # hellinger, the fine structure of the disagreement is not what matters and the
+        # continuous metrics are buying nothing.
+        q = (pt.argmax(-1) != pe.argmax(-1)).float()
     elif metric == "margin":
         # What the ELICITED side gains by getting its way here, rather than how far apart the
         # two distributions are overall.
@@ -236,7 +261,8 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.4))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
-    if q_metric not in ("elicited_outside", "tv", "margin"):
+    _METRICS = ("elicited_outside", "tv", "margin", "jsd", "hellinger", "top1_mismatch")
+    if q_metric not in _METRICS:
         raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
                            f"(elicited_outside | tv | margin)")
     if adaptive and not (0.0 <= alpha0 <= 1.0):
