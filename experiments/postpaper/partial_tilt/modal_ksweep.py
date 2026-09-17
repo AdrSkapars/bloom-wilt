@@ -36,8 +36,8 @@ before spending anything on k>0, because every truncated point is measured again
 
 Then the sweep, and pull the results down:
 
-    modal run experiments/postpaper/partial_tilt/modal_ksweep.py --ks 1,2,3,5,10,20,50
-    modal volume get bloom-runs /runs_local ./experiments/postpaper/runs_local
+    modal run experiments/postpaper/partial_tilt/modal_ksweep.py --ks 1,5,50,500
+    modal volume get bloom-runs runs_local ./experiments/postpaper/
     python -X utf8 experiments/postpaper/partial_tilt/ksweep.py self_harm Qwen_Qwen3.5-4B
 """
 import os
@@ -137,9 +137,13 @@ def _local_keys() -> dict:
 )
 def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
           rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15"):
-    """One container, every k in turn. Each k is its own `bloom_corrupt.py` process, so the
-    weights reload between them -- ~20s off the volume, which is not worth restructuring the
-    pipeline to avoid."""
+    """One container per CALL. `ks` may still be a comma list (they run in turn), but the
+    entrypoint fans the sweep out one k per container instead.
+
+    The k values are independent runs, and Modal bills per container-second: 13 containers for
+    five minutes costs what one container for sixty-five does, and finishes in five. A second
+    GPU in one container would not help -- the decode uses a single device and nothing here is
+    sharded."""
     os.chdir(REPO)
 
     # run_local.sh requires .env.local and sources it for keys. Rebuild it from the Modal
@@ -190,11 +194,36 @@ def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
 
 @app.local_entrypoint()
 def main(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
-         rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15"):
-    out = sweep.remote(ks=ks, beh=beh, model=model, rule=rule, b2=b2,
-                       scen=scen, var_batch=var_batch)
-    if out.get("failed"):
-        print("FAILED: %s" % ",".join(out["failed"]))
+         rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15",
+         serial: bool = False):
+    """Fan out one container per k. --serial falls back to a single looping container.
+
+    Each container writes its own run folder and commits the Volume itself, so concurrent
+    writers touch disjoint paths. A k whose judgment.json already exists is skipped by the
+    pipeline's round-level resume, which makes relaunching a partly-done sweep cheap.
+    """
+    klist = [x.strip() for x in ks.split(",") if x.strip()]
+    if serial or len(klist) == 1:
+        results = [sweep.remote(ks=",".join(klist), beh=beh, model=model, rule=rule,
+                                b2=b2, scen=scen, var_batch=var_batch)]
+    else:
+        print("fanning out %d k values, one container each" % len(klist))
+        results = list(sweep.map(
+            klist,
+            kwargs=dict(beh=beh, model=model, rule=rule, b2=b2,
+                        scen=scen, var_batch=var_batch),
+            order_outputs=False,
+            return_exceptions=True,
+        ))
+
+    failed = []
+    for r in results:
+        if isinstance(r, Exception):
+            failed.append(str(r)[:80])
+        elif isinstance(r, dict):
+            failed += r.get("failed", [])
+    if failed:
+        print("FAILED: %s" % ", ".join(failed))
         sys.exit(1)
     print("done -- pull results with:")
-    print("  modal volume get bloom-runs /runs_local ./experiments/postpaper/runs_local")
+    print("  modal volume get bloom-runs runs_local ./experiments/postpaper/")
