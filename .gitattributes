@@ -1,0 +1,8 @@
+# Shell scripts must keep LF. core.autocrlf=true was rewriting them to CRLF on checkout, and
+# a Linux bash then fails on the \r: "set: -: invalid option", "syntax error near unexpected
+# token $'in\r'". Harmless while every runner executed under Git Bash on Windows; fatal the
+# moment one is uploaded to a Linux container (Modal, or any rented GPU box).
+*.sh text eol=lf
+
+# Same reasoning for anything else executed by a shell or read line-by-line remotely.
+*.jinja text eol=lf
