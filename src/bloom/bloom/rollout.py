@@ -1290,8 +1290,12 @@ def run_rollout_batched_local(
         # evaluator message (vLLM, batched natively) then generate the target reply via
         # jail PoE. _jail_generate_hf batches the whole active chunk in ONE call per turn
         # (B slots), far more GPU-efficient than the per-variation serial path below.
+        # engine="hf_partial" is driven by partial_tilt_output, so its var_batch lives there.
+        # Reading only jailbroken_output's left partial_tilt_output.var_batch silently dead:
+        # raising it to fit a bigger card changed nothing and still ran at 15.
+        _vb_block = ("partial_tilt_output" if jail_engine == "hf_partial" else "jailbroken_output")
         jail_var_batch = max(1, int(os.environ.get("BLOOM_JAIL_VAR_BATCH",
-                                    (cfg.get("jailbroken_output", {}) or {}).get("var_batch", 12))))
+                                    (cfg.get(_vb_block, {}) or {}).get("var_batch", 12))))
         _jail_hf = jail_runtime_cfg["hf"]
 
         # One "seed" per transcript (variation x rep), honoring resume/skip. freeze_input
