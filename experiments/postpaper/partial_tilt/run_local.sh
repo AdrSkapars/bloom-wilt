@@ -34,9 +34,11 @@ case "$BEH" in
   # vanilla 60.2 -> LogitTilt 66.6 -> WILT 79.1, against 93-100 for every other behaviour. That
   # headroom is the point of running it -- self_harm pins every steered arm at 100 presence, so
   # nothing can be told apart there.
-  # NOTE: no kickoff bank exists for racial. The FIRST run generates fresh kickoffs and banks
-  # them; every later run reuses them. Seed with a single run before fanning out, or each
-  # parallel run invents its own scenarios and the arms are not comparable.
+  # The bank is NOT in the repo -- _banks/ is gitignored and the runs were purged to
+  # HuggingFace. Fetch it before the first racial run, or the pipeline silently generates its
+  # own scenarios and the arms stop being comparable:
+  #   runs_hyperparam/racial/Qwen_Qwen3.5-4B/_bank/  from AdrSkapars/bloom-wilt-transcripts
+  # It ships to Modal fine once local: add_local_dir reads the filesystem, not gitignore.
   racial)    BEHFILE=prompts/1_racial_bias.yaml;             BANKBEH=racial ;;
   goblin)    BEHFILE=prompts/9_goblin_fixation.yaml;         BANKBEH=goblin ;;
   selfpres)  BEHFILE=prompts/5_self_preservation.yaml;       BANKBEH=selfpres ;;
