@@ -74,6 +74,11 @@ image = (
         "HF_HUB_ENABLE_HF_TRANSFER": "0",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
+        # Two OOMs on the A10 both reported ~2GB "reserved but unallocated", i.e. fragmentation
+        # rather than a real ceiling: the decode allocates and frees several [B, V] tensors per
+        # token, and the topk workspace grows with k, so the allocator ends up unable to hand
+        # out a contiguous 700MB. expandable_segments lets it grow a segment instead.
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
     })
     # The repo itself. add_local_dir is applied last so a code edit does not invalidate the
     # (slow) pip layer above -- iterating on hftilt.py should not mean reinstalling torch.
@@ -127,10 +132,13 @@ def _local_keys() -> dict:
 
 @app.function(
     image=image,
-    gpu="A10",                 # 24GB: ~8GB weights + two KV caches at var_batch=15.
-                               # L4 is cheaper per hour but ~half the memory bandwidth, and a
-                               # two-forward-passes-per-token decode is bandwidth-bound, so it
-                               # can cost MORE per run. L40S if var_batch needs raising.
+    # L40S (48GB), not the A10 (24GB). The dominant cost is not the 8GB of weights but the KV
+    # cache -- 15 sequences x TWO contexts x ~1500 tokens -- which put the A10 at ~21GB of 22
+    # before the per-token tensors and the topk workspace. Two of twenty-six runs died that way,
+    # on different k each time, which is the signature of a ceiling being grazed rather than a
+    # specific k being too big. At five minutes a run the extra $0.85/hr is cents, and it buys
+    # out a whole class of rerun.
+    gpu="L40S",
     volumes={HF_CACHE: hf_vol, RUNS: runs_vol},
     secrets=[modal.Secret.from_dict(_local_keys())],
     # A k is ~5 minutes; 45 leaves room for a slow start (13 containers reading 8GB off the
