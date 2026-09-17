@@ -52,16 +52,20 @@ REPO_LOCAL = os.path.dirname(os.path.dirname(os.path.dirname(
 HF_CACHE = "/cache/hf"
 RUNS = "/runs"
 
-# No vllm: see the module docstring. torch is the cu124 wheel Modal's CUDA image expects.
+# No vllm: see the module docstring. Versions track pyproject, not guesses.
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
-        "torch==2.6.0",
-        "transformers==4.51.3",
+        # transformers >=5.13 is the repo's own floor (pyproject), and it is load-bearing:
+        # 4.x has no qwen3_5 architecture and no Gemma-4 either, so an older pin fails at
+        # AutoConfig with "does not recognize this architecture". Take the floor from
+        # pyproject rather than pinning a guess -- that guess cost the first GPU run.
+        "torch>=2.6",
+        "transformers>=5.13.0",
         "accelerate>=1.0",
         "litellm>=1.60",
-        "tenacity>=8.2",
-        "pyyaml>=6.0",
+        "tenacity>=9.1.4",
+        "pyyaml>=6.0.3",
         "jinja2>=3.1",
         "huggingface_hub>=0.30",
     )
