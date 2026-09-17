@@ -63,6 +63,7 @@ def trunc_stats(d):
     tot = 0
     acc = {"mean_support": 0.0, "empty_rate": 0.0, "argmax_agree": 0.0, "mean_mass_kept": 0.0}
     k = None
+    excludes_empty = False
     for line in open(f, encoding="utf-8"):
         line = line.strip()
         if not line:
@@ -75,6 +76,7 @@ def trunc_stats(d):
         if not n:
             continue
         k = r.get("top_k", k)
+        excludes_empty = excludes_empty or bool(r.get("support_excludes_empty", False))
         tot += n
         for key in acc:
             acc[key] += float(r.get(key, 0.0) or 0.0) * n
@@ -83,6 +85,15 @@ def trunc_stats(d):
     out = {key: acc[key] / tot for key in acc}
     out["positions"] = tot
     out["top_k"] = k
+    # EFFECTIVE k: the average number of candidates that actually survive truncation. Under
+    # rule="poe" that is the size of the two top-k sets' INTERSECTION, so it is bounded by k
+    # and typically well below it -- the real width of the choice the decode gets to make.
+    #
+    # Runs recorded before support_excludes_empty counted an empty intersection as 1 (the
+    # measurement was taken after the fallback had already substituted the target's top-1),
+    # so each empty position inflated the mean by exactly 1. Subtracting empty_rate undoes
+    # that exactly; newer runs need no correction.
+    out["eff_k"] = out["mean_support"] - (0.0 if excludes_empty else out["empty_rate"])
     return out
 
 
@@ -96,8 +107,8 @@ def sort_key(name):
     return (0, 10 ** 9)
 
 
-HDR = ("%-30s %3s %9s %8s %8s %9s %9s %8s %8s %8s %9s"
-       % ("run", "n", "presence", "arith%", "geom%", "min", "support", "empty", "agree", "mass",
+HDR = ("%-26s %10s %3s %9s %8s %8s %9s %8s %8s %9s"
+       % ("run", "eff_k", "n", "presence", "arith%", "geom%", "min", "empty", "agree",
           "positions"))
 if __name__ == "__main__":
     beh = sys.argv[1] if len(sys.argv) > 1 else "self_harm"
@@ -116,11 +127,11 @@ if __name__ == "__main__":
         s = trunc_stats(d)
         name = os.path.basename(d).replace("ptilt_", "").replace("_15s", "")
         if s:
-            print("%-30s %3d %9.1f %8.2f %8.2f %9.1e %9.2f %7.2f%% %7.2f%% %7.2f%% %9d"
-                  % (name[:30], q["n"], q["pres"], q["arith"], q["geom"], q["min"],
-                     s["mean_support"], 100 * s["empty_rate"], 100 * s["argmax_agree"],
-                     100 * s["mean_mass_kept"], s["positions"]))
+            e = s["eff_k"]
+            print("%-26s %10s %3d %9.1f %8.2f %8.2f %9.1e %7.2f%% %7.2f%% %9d"
+                  % (name[:26], ("%.2f" % e if e < 1000 else "%.0f" % e), q["n"], q["pres"],
+                     q["arith"], q["geom"], q["min"], 100 * s["empty_rate"],
+                     100 * s["argmax_agree"], s["positions"]))
         else:
-            print("%-30s %3d %9.1f %8.2f %8.2f %9.1e %9s"
-                  % (name[:30], q["n"], q["pres"], q["arith"], q["geom"], q["min"],
-                     "(no stats)"))
+            print("%-26s %10s %3d %9.1f %8.2f %8.2f %9.1e"
+                  % (name[:26], "-", q["n"], q["pres"], q["arith"], q["geom"], q["min"]))

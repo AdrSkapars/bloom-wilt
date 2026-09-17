@@ -72,11 +72,29 @@ def _support_mask(tl, cl, top_k: int, rule: str):
     """
     if top_k <= 0:
         return torch.ones_like(tl, dtype=torch.bool)
-    k = min(int(top_k), tl.shape[-1])
-    t_keep = torch.zeros_like(tl, dtype=torch.bool)
-    c_keep = torch.zeros_like(cl, dtype=torch.bool)
-    t_keep.scatter_(1, tl.topk(k, dim=-1).indices, True)
-    c_keep.scatter_(1, cl.topk(k, dim=-1).indices, True)
+    V = tl.shape[-1]
+    k = min(int(top_k), V)
+
+    def _top_mask(lg):
+        """Boolean mask of the k largest entries per row.
+
+        For k past halfway, take the SMALLEST V-k and invert: torch.topk at k=223488 of
+        248320 is effectively a full sort and OOMed a 22GB card, while the complement is a
+        topk of 24832 -- same mask, ~9x less work. Exact apart from ties at the boundary,
+        which float logits do not produce in practice.
+        """
+        if k * 2 <= V:
+            idx = lg.topk(k, dim=-1).indices
+            m = torch.zeros_like(lg, dtype=torch.bool)
+            m.scatter_(1, idx, True)
+            return m
+        idx = lg.topk(V - k, dim=-1, largest=False).indices
+        m = torch.ones_like(lg, dtype=torch.bool)
+        m.scatter_(1, idx, False)
+        return m
+
+    t_keep = _top_mask(tl)
+    c_keep = _top_mask(cl)
     return (t_keep | c_keep) if rule == "mix" else (t_keep & c_keep)
 
 
@@ -193,6 +211,11 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
             if floor > 0.0:
                 keep = keep & (torch.softmax(tl, dim=-1) >= floor)
             empty = ~keep.any(dim=-1)
+            # Size of the TRUE surviving set, taken before the fallback below replaces an
+            # empty row with a one-hot. Measured after, an empty position contributes 1
+            # instead of 0 and the mean reads as though something survived when nothing did
+            # -- at k=1 that showed up as "support 1.00, empty 31%", which cannot both be true.
+            support_now = keep.sum(-1)
             # A row with no survivors cannot be sampled from at all, so give it a
             # one-hot admissible support instead of a NaN: the target's own top-1 is
             # always plausible by construction.
@@ -216,7 +239,7 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
                     n_agree += int(agree.sum())
                     sum_mass += float((torch.where(keep, full, torch.zeros_like(full))
                                        .sum(-1) * live).sum())
-                    sum_support += int((keep.sum(-1) * live).sum())
+                    sum_support += int((support_now * live).sum())
                     n_empty += int((empty & live).sum())
                     n_pos += n_live
 
@@ -259,6 +282,9 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
             "rule": rule, "top_k": top_k, "b1": b1, "b2": b2,
             "positions": n_pos,
             "mean_support": round(sum_support / n_pos, 4),
+            # Records written before this flag counted an empty position as support 1, so a
+            # reader must subtract empty_rate from mean_support to compare them with these.
+            "support_excludes_empty": True,
             "empty_rate": round(n_empty / n_pos, 6),
             "argmax_agree": round(n_agree / n_pos, 6),
             "mean_mass_kept": round(sum_mass / n_pos, 6),
