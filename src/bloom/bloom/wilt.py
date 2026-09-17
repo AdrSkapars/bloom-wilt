@@ -629,13 +629,22 @@ def _jail_generate_hf(hf: Dict, jail_runtime_cfg: Dict,
 def jail_generate(handle: Dict, jail_runtime_cfg: Dict,
                   target_msgs_batch: List[List[Dict]], max_tokens: int,
                   temperature: float, no_think_target: bool) -> List[Dict]:
-    """The jail/BoN target step: hf_full only (exact full-vocab PoE on local weights).
+    """The jail/BoN target step: hf_full (exact full-vocab PoE on local weights).
 
-    No engine dispatch -- the hosted-API stream calls apitilt._jail_generate_api itself. An
-    api_tilt cfg arriving here is a routing bug, so it raises rather than silently producing
-    unsteered transcripts from a local decode.
+    The hosted-API stream calls apitilt._jail_generate_api itself, so an api_tilt cfg arriving
+    here is a routing bug and raises rather than silently producing unsteered transcripts from
+    a local decode.
+
+    hf_partial is the one other engine accepted, and it is not a paper path: it belongs to
+    partial_tilt_output, which no paper config sets, so the branch below is unreachable for
+    every run at or before the `paper` tag. It is dispatched here rather than at the three
+    call sites so the batched and serial rollouts pick it up from one place.
     """
     _engine = str(jail_runtime_cfg.get("engine", "") or "hf_full")
+    if _engine == "hf_partial":
+        from .hftilt import _driven_hf_partial
+        return _driven_hf_partial(handle, jail_runtime_cfg, target_msgs_batch,
+                                  max_tokens, temperature, no_think_target)
     if _engine != "hf_full":
         raise RuntimeError(
             f"jail_generate is hf_full only, got engine={_engine!r}. A hosted api/ target "

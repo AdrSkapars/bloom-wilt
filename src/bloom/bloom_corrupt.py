@@ -240,13 +240,13 @@ cfg = DotDict({
     "partial_tilt_output": {
         # ---- shared: read by every rule ----
         "enabled": False,                         # False = the un-steered b1=1,b2=0 corner (vanilla/BoN over the API); True = steer with the elicited context. Override with BLOOM_API_JAIL_ENABLED.
-        "engine": "api",                          # "api" = hosted top-k logprobs, the only engine implemented. "hf_full" would run this same partial-information algorithm against a local model (the oracle-ladder ablation); not implemented yet, and anything but "api" is refused.
+        "engine": "api",                          # "api" = hosted top-k logprobs (the restricted interface itself). "hf_partial" = the SAME restricted rule against LOCAL weights, which is the oracle-ladder rung: the full distributions are also in hand, so top_k truncation can be scored against the untruncated decode for free. Named hf_partial, not hf_full, because jailbroken_output already uses "hf_full" for the paper's full-vocab PoE and the two must not collide. Override with BLOOM_PTILT_ENGINE.
         "var_batch": 15,                          # cross-scenario batch size (scenarios advanced in lockstep per turn). Override with BLOOM_API_JAIL_VAR_BATCH.
         "prefill": True,                          # True = use the behaviour file's jailbroken_output_prefill to condition the ELICITED context; False = none. Never sampled, only conditioned on.
         "b1": 1.0,                                # target-term weight. Only the two mixing-free corners are reproducible over a text API: b1=1,b2=0 (target only) and b1=0,b2!=0 (elicited only). Superseded by mix.alpha0 whenever mix.adaptive=True.
         "b2": 1.0,                                # elicited-term weight. Also the elicited weight of the rule="mix" union score when mix.adaptive=False.
-        "rule": "corner",                         # "corner" = one of the two mixing-free points above. "mix" = the per-token decode: score the UNION of the two contexts' top-k in PROBABILITY space and pick from it (see the "mix" sub-block). "spec" = the same rule wrapped in a block draft/verify loop (see "spec"). "overlap" is still accepted as an alias for "mix" so stored runs stay launchable. Override with BLOOM_API_RULE.
-        "top_k": 5,                               # candidates requested per position per context. Fireworks caps this at 5.
+        "rule": "corner",                         # "poe" (engine=hf_partial) = the PAPER's operator: z = b1*l_target + b2*l_elicited, a logit-space sum, i.e. a GEOMETRIC mixture. Under truncation a candidate needs a finite logprob from BOTH sides, so the surviving support is the INTERSECTION of the two top-k sets -- usually smaller than k, sometimes empty (see hf.empty_action). At top_k=0 this reduces EXACTLY to the paper's LogitTilt, which is the sweep's anchor. "corner" = one of the two mixing-free points above. "mix" = the per-token decode: score the UNION of the two contexts' top-k in PROBABILITY space and pick from it (see the "mix" sub-block). "spec" = the same rule wrapped in a block draft/verify loop (see "spec"). "overlap" is still accepted as an alias for "mix" so stored runs stay launchable. Override with BLOOM_API_RULE.
+        "top_k": 5,                               # candidates kept per position per context BEFORE combining. engine="api": requested from the provider, and Fireworks caps it at 5. engine="hf_partial": the truncation being swept, where 0 means NO truncation (full vocab) and so reduces the engine to the paper's LogitTilt rather than branching around it. Override with BLOOM_PTILT_TOPK.
         "floor": 1e-05,                           # minimum TARGET probability (PERCENT) for an emitted token, governing every rule. Needed because the union scores a token the target did not propose as b1*0 + b2*p_e and so cannot tell 1e-3 from 1e-12. Measured: the level barely moves presence or plausibility across 1e-04..1e-06, it only controls the tail. 0 disables. Override with BLOOM_API_FLOOR.
 
         # ---- rule="mix": the single-position decode. rule="spec" ALSO reads all of these,
@@ -280,6 +280,14 @@ cfg = DotDict({
             "intervene_alpha": -1.0,              # alpha to use AT an intervention, overriding the alpha(q) schedule. <0 keeps the schedule, which is self-defeating for a target draft -- at theta=0.5 with k=10 it returns alpha=0.599, resolving the position almost entirely by the context whose disagreement triggered it. 0 hands the position to the elicited context alone, subject to the floor. Override with BLOOM_API_SPEC_INTERVENE_ALPHA.
             "burst": 0,                           # after an intervention, keep drafting from the ELICITED context for this many tokens before reverting to spec.draft. 0 disables. Isolated interventions do not compound -- mix.target_every collapsed to vanilla, and 235 alpha=0 interventions moved presence by 5 -- because each steered token is followed by one that pulls the context back. A burst holds the steering across consecutive tokens. Override with BLOOM_API_SPEC_BURST.
             "flip": False,                        # alternate sides on every intervention, each running until its OWN stop condition. Target-drafting ends when disagreement reaches spec.theta; elicited-drafting ends when the target prices a token below `floor`. Replaces the fixed burst timer, which ends a steered run whether or not it is still productive, with a condition that ends it exactly when it stops being plausible. Override with BLOOM_API_SPEC_FLIP.
+        },
+
+        # ---- engine="hf_partial" only: the local-weights rung of the same rule ----
+        "hf": {
+            "model": "",                          # elicited-context model. "" or "self" = self-jail (the target under the behaviour file's jailbroken_output_system_prompt + prefill), which is what every partial-tilt result so far assumes. A "local/<repo>" value uses a separate expert instead.
+            "empty_action": "target_argmax",      # what to emit when truncation leaves NO surviving candidate -- unavoidable under rule="poe" at small top_k, where the support is the intersection of the two top-k sets. "target_argmax" emits the target's own top-1, which is admissible by construction and deterministic. "target_sample" draws from the untruncated target instead. The rate this fires is recorded as empty_rate and is one of the things the k-sweep is measuring.
+            "measure_oracle": True,               # at every position, also combine WITHOUT truncation (same forward pass, no extra model call) and record whether the two argmaxes agree. This is the point of the local engine: argmax_agree is a per-TOKEN statistic over thousands of tokens, so it separates two k values in a single cell, where a behaviour-presence difference needs ~99 scenarios against a pooled sd of 9.25. Written to partial_stats.jsonl alongside mean_support, empty_rate and mean_mass_kept.
+            "greedy": False,                      # True = emit the argmax of the combined scores instead of sampling from them. Removes sampling noise from a k-sweep, at the cost of the round-to-round diversity pools need. The paper's LogitTilt samples, so leave False when comparing against it.
         },
     },
 })
@@ -371,6 +379,20 @@ if __name__ == "__main__":
         ("BLOOM_API_JAIL_B1",          ("partial_tilt_output", "b1"),           float),
         ("BLOOM_API_JAIL_B2",          ("partial_tilt_output", "b2"),           float),
         ("BLOOM_API_JAIL_VAR_BATCH",   ("partial_tilt_output", "var_batch"),      int),
+        # BLOOM_PTILT_* aliases. The BLOOM_API_* names above stay valid, but they read wrong
+        # for engine="hf_partial" (nothing hosted is involved), and top_k is the knob this
+        # sweep moves most. Applied after their BLOOM_API_* twins, so these win when both set.
+        ("BLOOM_PTILT_ENABLED",  ("partial_tilt_output", "enabled"),        _envbool),
+        ("BLOOM_PTILT_ENGINE",   ("partial_tilt_output", "engine"),              str),
+        ("BLOOM_PTILT_RULE",     ("partial_tilt_output", "rule"),                str),
+        ("BLOOM_PTILT_TOPK",     ("partial_tilt_output", "top_k"),               int),   # 0 = full vocab (hf_partial)
+        ("BLOOM_PTILT_B1",       ("partial_tilt_output", "b1"),                float),
+        ("BLOOM_PTILT_B2",       ("partial_tilt_output", "b2"),                float),
+        ("BLOOM_PTILT_FLOOR",    ("partial_tilt_output", "floor"),             float),   # percent, as everywhere in this block
+        ("BLOOM_PTILT_HF_MODEL", ("partial_tilt_output", "hf", "model"),          str),
+        ("BLOOM_PTILT_HF_EMPTY", ("partial_tilt_output", "hf", "empty_action"),   str),
+        ("BLOOM_PTILT_HF_MEASURE", ("partial_tilt_output", "hf", "measure_oracle"), _envbool),
+        ("BLOOM_PTILT_HF_GREEDY", ("partial_tilt_output", "hf", "greedy"),   _envbool),
         ("BLOOM_TARGET_TEMP",    ("rollout", "target_temperature"),           float),   # target decode only; 0 = greedy. Evaluator keeps cfg.temperature.
         ("BLOOM_JUDGE_MODEL",    ("judgment", "model"),                       str),   # non-'local/' id => hosted API via litellm
         ("BLOOM_JUDGE_THINKING", ("judgment", "thinking"),                    _envbool),

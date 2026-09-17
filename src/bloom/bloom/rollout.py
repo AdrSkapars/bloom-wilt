@@ -914,6 +914,33 @@ def run_rollout_batched_local(
     jail_vllm = False
     jail_hf   = need_jail_model
 
+    # -- partial_tilt_output, engine="hf_partial" ---------------------------------------
+    # The same restricted-information rule the hosted engine runs, but against LOCAL weights,
+    # so the untruncated distributions are also in hand and top-k truncation can be scored
+    # against itself. Gated on the block being enabled AND naming the local engine: no paper
+    # config sets partial_tilt_output at all, and an api/ target never reaches this module.
+    # Synthesising jail_cfg mirrors what the vanilla/BoN path below already does, so the
+    # model-loading and dispatch machinery is reused rather than duplicated.
+    _ptilt_cfg = cfg.get("partial_tilt_output", {}) or {}
+    if (bool(_ptilt_cfg.get("enabled", False))
+            and str(_ptilt_cfg.get("engine", "api") or "api") == "hf_partial"):
+        if jail_use_rollout:
+            raise RuntimeError(
+                "jailbroken_output and partial_tilt_output are both enabled. They are two "
+                "decoders for the same target step -- enable exactly one.")
+        _phf = _ptilt_cfg.get("hf", {}) or {}
+        _pmodel = (_phf.get("model", "") or "").strip() or "self"
+        jail_cfg = {"model": _pmodel, "enabled": True, "engine": "hf_partial",
+                    "b1": _ptilt_cfg.get("b1", 1.0), "b2": _ptilt_cfg.get("b2", 1.0),
+                    "prefill": _ptilt_cfg.get("prefill", True),
+                    # the partial engine applies partial_tilt_output.floor itself, in percent
+                    "target_floor": 0.0, "target_only": False}
+        jail_use_rollout = True; jail_on = True
+        jail_engine = "hf_partial"
+        jail_vllm = False
+        jail_hf = True
+        need_jail_model = True
+
     # ── FLRT-in (flrt_search_input): needs the target + self-jail teacher as HF models for the
     # full-vocab distillation loss. They are loaded INDEPENDENTLY below (a separate handle,
     # `flrt_hf`) and do NOT change the target-reply path — the vLLM target still generates the
@@ -1046,6 +1073,23 @@ def run_rollout_batched_local(
             "neg_normal":        bool(jail_cfg.get("neg_normal", False)),  # DELTA/proxy-tuning: neg = jail model under NORMAL (no-jail) prompt (BLOOM_JAIL_NEG_NORMAL)
             "tokbias":      _tb,  # static logit-bias baseline: cfg.tokbias_output knobs + yaml prompt content; BLOOM_TOKBIAS_* override
         }
+        if jail_engine == "hf_partial":
+            # api_* names because hftilt reads the same runtime keys the hosted engine does --
+            # one rule, two information levels, so the knobs that mean the same thing share a
+            # name. top_k=0 is "no truncation", which makes the engine reduce exactly to the
+            # paper's full-vocab LogitTilt.
+            _phf = _ptilt_cfg.get("hf", {}) or {}
+            jail_runtime_cfg.update({
+                "api_rule":  str(_ptilt_cfg.get("rule", "poe") or "poe"),
+                "api_top_k": int(_ptilt_cfg.get("top_k", 0) or 0),
+                "api_floor": float(_ptilt_cfg.get("floor", 0.0) or 0.0),
+                "hf_empty_action": str(_phf.get("empty_action", "target_argmax") or "target_argmax"),
+                "hf_measure_oracle": bool(_phf.get("measure_oracle", True)),
+                "hf_greedy": bool(_phf.get("greedy", False)),
+            })
+            print(f"  [partial_tilt_output] engine=hf_partial rule={jail_runtime_cfg['api_rule']} "
+                  f"top_k={jail_runtime_cfg['api_top_k'] or 'full'} "
+                  f"(b1={jail_runtime_cfg['b1']}, b2={jail_runtime_cfg['b2']})", flush=True)
         if not need_jail_model:
             # Self-jail input-search TRS only (jail_in_loss): no separate proposal model.
             # The reward TRS is generated from the already-loaded target model
@@ -1981,7 +2025,7 @@ def run_rollout_batched_local(
                     raw_target = ""
                 elif (jail_runtime_cfg is not None
                         and jail_runtime_cfg.get("enabled", False)):
-                    if jail_runtime_cfg.get("engine") == "hf_full":
+                    if jail_runtime_cfg.get("engine") in ("hf_full", "hf_partial"):
                         _jr = jail_generate(
                             jail_runtime_cfg["hf"], jail_runtime_cfg,
                             [target_msgs], target_max_tokens, temperature, no_think_target,
