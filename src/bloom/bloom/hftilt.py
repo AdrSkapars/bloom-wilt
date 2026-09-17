@@ -152,6 +152,18 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
         # hellinger, the fine structure of the disagreement is not what matters and the
         # continuous metrics are buying nothing.
         q = (pt.argmax(-1) != pe.argmax(-1)).float()
+    elif metric == "target_top_gap":
+        # The target's OWN top-1, scored under both distributions: how much probability the
+        # elicited context withholds from the token the target most wants.
+        #     q = phat_t(t_top) - phat_e(t_top)
+        # The only cross-distribution measure here -- every other one compares each side's
+        # pick within its own distribution. Graded, so unlike top1_mismatch (a hard switch
+        # where 1**kappa = 1 makes kappa inert) the exponent is a live dial again. Clamped at
+        # 0 for the case where the elicited side likes the target's pick MORE than the target
+        # does, which is agreement, not negative disagreement.
+        t_top = pt.argmax(-1)
+        idx = torch.arange(pt.shape[0], device=pt.device)
+        q = (pt[idx, t_top] - pe[idx, t_top]).clamp_min(0.0)
     elif metric == "margin":
         # What the ELICITED side gains by getting its way here, rather than how far apart the
         # two distributions are overall.
@@ -261,7 +273,8 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.4))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
-    _METRICS = ("elicited_outside", "tv", "margin", "jsd", "hellinger", "top1_mismatch")
+    _METRICS = ("elicited_outside", "tv", "margin", "jsd", "hellinger", "top1_mismatch",
+                "target_top_gap")
     if q_metric not in _METRICS:
         raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
                            f"(elicited_outside | tv | margin)")
