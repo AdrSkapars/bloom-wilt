@@ -1079,6 +1079,7 @@ def run_rollout_batched_local(
             # name. top_k=0 is "no truncation", which makes the engine reduce exactly to the
             # paper's full-vocab LogitTilt.
             _phf = _ptilt_cfg.get("hf", {}) or {}
+            _pmix = _ptilt_cfg.get("mix", {}) or {}
             jail_runtime_cfg.update({
                 "api_rule":  str(_ptilt_cfg.get("rule", "poe") or "poe"),
                 "api_top_k": int(_ptilt_cfg.get("top_k", 0) or 0),
@@ -1086,6 +1087,12 @@ def run_rollout_batched_local(
                 "hf_empty_action": str(_phf.get("empty_action", "target_argmax") or "target_argmax"),
                 "hf_measure_oracle": bool(_phf.get("measure_oracle", True)),
                 "hf_greedy": bool(_phf.get("greedy", False)),
+                # adaptive alpha(q) lives in the mix sub-block: it is the same schedule the
+                # hosted engine runs, and poe/poe_union consume it as (b1, b2) = (a, 1-a)
+                "api_adaptive": bool(_pmix.get("adaptive", False)),
+                "api_alpha0": float(_pmix.get("alpha0", 0.4)),
+                "api_alpha_k": float(_pmix.get("alpha_k", 10.0) or 10.0),
+                "api_q_metric": str(_pmix.get("q_metric", "elicited_outside") or "elicited_outside"),
             })
             print(f"  [partial_tilt_output] engine=hf_partial rule={jail_runtime_cfg['api_rule']} "
                   f"top_k={jail_runtime_cfg['api_top_k'] or 'full'} "

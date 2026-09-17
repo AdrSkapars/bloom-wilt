@@ -78,6 +78,21 @@ export BLOOM_PTILT_TOPK=$K
 export BLOOM_PTILT_B1=$B1
 export BLOOM_PTILT_B2=$B2
 export BLOOM_PTILT_FLOOR="${FLOOR:-0}"      # percent; 0 keeps top-k the ONLY variable
+
+# ADAPTIVE alpha(q): (b1, b2) become (alpha, 1-alpha) with alpha = ALPHA0*(1 - q**ALPHA_K).
+# Only the ratio matters to poe, so alpha0 = b1/(b1+b2) -- the fixed B2=1.5 against B1=1.0 is
+# alpha0=0.4, which is why that is the default here: at q=0 an adaptive run starts from
+# exactly the fixed run's operating point and differs only as disagreement rises.
+if [ "${ADAPTIVE:-0}" = "1" ]; then
+  export BLOOM_API_ADAPTIVE=1
+  export BLOOM_API_ALPHA0="${ALPHA0:-0.4}"
+  export BLOOM_API_ALPHA_K="${ALPHA_K:-10}"
+  export BLOOM_API_Q_METRIC="${Q_METRIC:-elicited_outside}"
+  ASUF="_a${ALPHA0:-0.4}k${ALPHA_K:-10}"
+  [ "${Q_METRIC:-elicited_outside}" = "elicited_outside" ] || ASUF="${ASUF}_q${Q_METRIC}"
+else
+  ASUF=""
+fi
 export BLOOM_API_JAIL_VAR_BATCH="${VAR_BATCH:-15}"
 
 # cfg.target_gpu_id defaults to 1 because the paper's boxes kept the auditor on GPU 0 and the
@@ -89,7 +104,7 @@ export BLOOM_TARGET_GPU="${TARGET_GPU:-0}"
 if [ "$K" = "0" ]; then KSUF="_kfull"; else KSUF="_k${K}"; fi
 if [ "$RULE" = "poe" ]; then RSUF=""; else RSUF="_${RULE}"; fi
 if [ "${FLOOR:-0}" = "0" ]; then FSUF=""; else FSUF="_fl${FLOOR}"; fi
-export BLOOM_FOLDER=runs_local/${BEH}/${MODELDIR}/ptilt${RSUF}${KSUF}_b${B2}${FSUF}_${SCEN}s
+export BLOOM_FOLDER=runs_local/${BEH}/${MODELDIR}/ptilt${RSUF}${KSUF}_b${B2}${ASUF}${FSUF}_${SCEN}s
 [ -n "${RUN_TAG:-}" ] && export BLOOM_FOLDER="${BLOOM_FOLDER}_${RUN_TAG}"
 
 echo "=== beh=$BEH model=$MODEL rule=$RULE k=${K} (0=full vocab) b1=$B1 b2=$B2 scen=$SCEN"

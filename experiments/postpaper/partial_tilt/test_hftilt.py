@@ -165,6 +165,63 @@ def test_poe_union_zero_fills_the_missing_side():
     check("  ...while poe still is", torch.allclose(p1, p2, atol=1e-6))
 
 
+def test_alpha0_matches_the_fixed_weights_at_q0():
+    """alpha0 = b1/(b1+b2), so alpha0=0.4 must reproduce b1=1.0,b2=1.5 wherever q=0.
+
+    This is the claim the whole adaptive-vs-fixed comparison rests on: if the schedule does
+    not start from the fixed run's operating point, a difference between them cannot be
+    attributed to the schedule.
+    """
+    keep = _support_mask(TL, CL, 0, "poe")
+    fixed = _combine(TL, CL, 1.0, 1.5, "poe", keep, 1.0)
+    gain = 1.0 + 1.5
+    adapt = _combine(TL, CL, 0.4 * gain, 0.6 * gain, "poe", keep, 1.0)
+    check("alpha0=0.4 x gain == fixed b1=1.0/b2=1.5 for poe",
+          torch.allclose(fixed, adapt, atol=1e-6),
+          "max|diff|=%.2e" % (fixed - adapt).abs().max())
+
+    # WITHOUT the gain the two differ, and not slightly: (alpha, 1-alpha) sums to 1 while the
+    # fixed pair sums to 2.5, and that sum is an inverse temperature. Asserting the failure
+    # keeps the reason for the gain from being quietly dropped later.
+    nogain = _combine(TL, CL, 0.4, 0.6, "poe", keep, 1.0)
+    check("  ...and WITHOUT the gain they differ (sum = inverse temperature)",
+          not torch.allclose(fixed, nogain, atol=1e-3))
+
+    # ... and that per-row tensor weights broadcast the same as scalars
+    b1 = torch.full((B,), 0.4 * gain)
+    b2 = torch.full((B,), 0.6 * gain)
+    check("per-row tensor weights match scalar weights",
+          torch.allclose(_combine(TL, CL, b1, b2, "poe", keep, 1.0), adapt, atol=1e-6))
+
+
+def test_q_is_bounded_and_responds():
+    """q must land in [0,1] under every metric, and reach 1 when the sides are disjoint."""
+    from bloom.bloom.hftilt import _q_of, _side_masks
+    tl = torch.full((1, 10), -10.0); cl = torch.full((1, 10), -10.0)
+    tl[0, :2] = torch.tensor([5.0, 4.0])
+    cl[0, 8:] = torch.tensor([5.0, 4.0])
+    t_keep, c_keep = _side_masks(tl, cl, 2)
+    for m in ("elicited_outside", "tv"):
+        q = _q_of(tl, cl, t_keep, c_keep, m)
+        check("q = 1 on disjoint sides (%s)" % m,
+              0.0 <= float(q[0]) <= 1.0 and float(q[0]) > 0.99, "q=%.4f" % float(q[0]))
+    # margin does NOT reach 1 on disjoint sides, and that is correct rather than a bug: it is
+    # p_e(elicited top-1) - p_e(target top-1), so it is capped by how PEAKED the elicited
+    # distribution is. Here the elicited side splits 0.73/0.27 over two tokens, so the most it
+    # can report is 0.73. Consequence for the schedule: under margin, alpha never reaches 0
+    # unless the elicited context is also very confident -- a different lever from tv, not a
+    # rescaling of it.
+    qm = float(_q_of(tl, cl, t_keep, c_keep, "margin")[0])
+    check("margin is capped by elicited peakedness, not by disjointness",
+          0.70 < qm < 0.76, "q=%.4f (expected ~0.731 = softmax([5,4])[0])" % qm)
+    # identical contexts -> no disagreement
+    t2, c2 = _side_masks(tl, tl, 2)
+    for m in ("elicited_outside", "tv", "margin"):
+        q = _q_of(tl, tl, t2, c2, m)
+        check("q = 0 when the contexts agree (%s)" % m, float(q[0]) < 1e-6,
+              "q=%.4f" % float(q[0]))
+
+
 def test_decode_loop_with_a_stub_model():
     """Drive _driven_hf_partial with a fake HF model: fixed logits, no weights.
 
@@ -256,6 +313,7 @@ def test_decode_loop_with_a_stub_model():
 
 for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_support_is_union,
            test_poe_union_zero_fills_the_missing_side,
+           test_alpha0_matches_the_fixed_weights_at_q0, test_q_is_bounded_and_responds,
            test_renormalisation_is_a_noop_for_poe, test_probabilities_live_only_on_the_support,
            test_empty_intersection_is_reachable, test_decode_loop_with_a_stub_model):
     print(fn.__name__)

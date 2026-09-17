@@ -150,7 +150,8 @@ def _local_keys() -> dict:
 )
 def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
           rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15",
-          tag: str = ""):
+          tag: str = "", adaptive: bool = False, alpha0: str = "0.4",
+          alpha_k: str = "10", q_metric: str = "elicited_outside"):
     """One container per CALL. `ks` may still be a comma list (they run in turn), but the
     entrypoint fans the sweep out one k per container instead.
 
@@ -176,6 +177,8 @@ def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
         # isolates run-to-run variance: the hosted model's own non-determinism plus a judge
         # scoring near-identical transcripts.
         "RUN_TAG": tag,
+        "ADAPTIVE": "1" if adaptive else "0",
+        "ALPHA0": alpha0, "ALPHA_K": alpha_k, "Q_METRIC": q_metric,
         # runs_local lives on the Volume; BLOOM_RUNS_ROOT is set by run_local.sh, so symlink
         # the tree it writes into the mount instead of forking the runner for Modal.
         "AUDITOR": "api",
@@ -213,7 +216,9 @@ def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
 @app.local_entrypoint()
 def main(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
          rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15",
-         serial: bool = False, tag: str = ""):
+         serial: bool = False, tag: str = "", adaptive: bool = False,
+         alpha0: str = "0.4", alpha_k: str = "10",
+         q_metric: str = "elicited_outside"):
     """Fan out one container per k. --serial falls back to a single looping container.
 
     Each container writes its own run folder and commits the Volume itself, so concurrent
@@ -223,13 +228,17 @@ def main(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
     klist = [x.strip() for x in ks.split(",") if x.strip()]
     if serial or len(klist) == 1:
         results = [sweep.remote(ks=",".join(klist), beh=beh, model=model, rule=rule,
-                                b2=b2, scen=scen, var_batch=var_batch, tag=tag)]
+                                b2=b2, scen=scen, var_batch=var_batch, tag=tag,
+                                adaptive=adaptive, alpha0=alpha0, alpha_k=alpha_k,
+                                q_metric=q_metric)]
     else:
         print("fanning out %d k values, one container each" % len(klist))
         results = list(sweep.map(
             klist,
             kwargs=dict(beh=beh, model=model, rule=rule, b2=b2,
-                        scen=scen, var_batch=var_batch, tag=tag),
+                        scen=scen, var_batch=var_batch, tag=tag,
+                        adaptive=adaptive, alpha0=alpha0, alpha_k=alpha_k,
+                        q_metric=q_metric),
             order_outputs=False,
             return_exceptions=True,
         ))

@@ -108,7 +108,38 @@ def _support_mask(tl, cl, top_k: int, rule: str):
     return (t_keep & c_keep) if rule == "poe" else (t_keep | c_keep)
 
 
-def _combine(tl, cl, b1: float, b2: float, rule: str, keep, temperature: float,
+def _q_of(tl, cl, t_keep, c_keep, metric: str):
+    """Per-row disagreement q in [0, 1], from the TRUNCATED sides.
+
+    Same three measures as the hosted engine, so a local number is comparable to an API one.
+    Each side is renormalised over its own surviving mass, which is what makes these
+    distributions rather than arbitrary sums.
+
+    Note "elicited_outside" DEGENERATES at top_k=0: with no truncation nothing is outside the
+    target's set, so q is identically 0 and alpha never moves off alpha0. tv and margin stay
+    meaningful at full vocab.
+    """
+    pt = torch.softmax(tl, dim=-1)
+    pe = torch.softmax(cl, dim=-1)
+    pt = torch.where(t_keep, pt, torch.zeros_like(pt))
+    pe = torch.where(c_keep, pe, torch.zeros_like(pe))
+    pt = pt / pt.sum(-1, keepdim=True).clamp_min(1e-12)
+    pe = pe / pe.sum(-1, keepdim=True).clamp_min(1e-12)
+    if metric == "tv":
+        q = 0.5 * (pt - pe).abs().sum(-1)
+    elif metric == "margin":
+        # What the ELICITED side gains by getting its way here, rather than how far apart the
+        # two distributions are overall.
+        e_top = pe.argmax(-1)
+        t_top = pt.argmax(-1)
+        idx = torch.arange(pe.shape[0], device=pe.device)
+        q = (pe[idx, e_top] - pe[idx, t_top]).clamp_min(0.0)
+    else:   # elicited_outside
+        q = torch.where(t_keep, torch.zeros_like(pe), pe).sum(-1)
+    return q.clamp(0.0, 1.0)
+
+
+def _combine(tl, cl, b1, b2, rule: str, keep, temperature: float,
              t_keep=None, c_keep=None):
     """Scores over the surviving support, as a probability distribution per row.
 
@@ -137,6 +168,12 @@ def _combine(tl, cl, b1: float, b2: float, rule: str, keep, temperature: float,
         if temperature > 0 and abs(temperature - 1.0) > 1e-9:
             w = w.clamp_min(0).pow(1.0 / max(temperature, 1e-6))
         return w / w.sum(-1, keepdim=True).clamp_min(1e-12)
+    # b1/b2 arrive as scalars for a fixed weighting and as [B] tensors under adaptive alpha;
+    # unsqueeze so both broadcast against [B, V] the same way.
+    if torch.is_tensor(b1):
+        b1 = b1.unsqueeze(-1)
+    if torch.is_tensor(b2):
+        b2 = b2.unsqueeze(-1)
     if rule == "poe_union" and t_keep is not None and c_keep is not None:
         # A candidate the other side did not propose keeps its own side's logit and has ZERO
         # ADDED for the missing one, rather than being dropped. Same arithmetic as "poe"
@@ -189,6 +226,21 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     if empty_action not in ("target_argmax", "target_sample"):
         raise RuntimeError(f"partial_tilt_output.hf.empty_action={empty_action!r} unknown "
                            f"(target_argmax | target_sample)")
+    # ADAPTIVE alpha(q). Replaces the fixed pair with alpha = alpha0*(1 - q**kappa), used as
+    # (b1, b2) = (alpha, 1-alpha). Only the RATIO matters to poe, so this is the same family
+    # with its redundant degree of freedom removed: alpha0 = b1/(b1+b2), i.e. the fixed
+    # b1=1.0/b2=1.5 used everywhere above is alpha0 = 0.4. At q=1 alpha=0 and the position is
+    # resolved by the elicited context alone.
+    adaptive = bool(jail_runtime_cfg.get("api_adaptive", False))
+    gain = b1 + b2          # see the GAIN note in the decode loop
+    alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.4))
+    alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
+    q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
+    if q_metric not in ("elicited_outside", "tv", "margin"):
+        raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
+                           f"(elicited_outside | tv | margin)")
+    if adaptive and not (0.0 <= alpha0 <= 1.0):
+        raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
     measure = bool(jail_runtime_cfg.get("hf_measure_oracle", True))
     greedy = bool(jail_runtime_cfg.get("hf_greedy", False))
 
@@ -218,6 +270,7 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     n_pos = n_empty = n_agree = 0
     sum_support = 0
     sum_mass = 0.0
+    sum_q = sum_alpha = 0.0
 
     with torch.no_grad():
         ti, ta = _hf_left_pad(t_prefs, pad_id, device)
@@ -250,13 +303,30 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
                 onehot[torch.arange(B, device=device), t_am] = True
                 keep = torch.where(empty.unsqueeze(-1), onehot, keep)
 
-            probs = _combine(tl, cl, b1, b2, rule, keep, temperature, t_keep, c_keep)
+            if adaptive:
+                q = _q_of(tl, cl, t_keep, c_keep, q_metric)
+                # clamped off exactly 0 so the target's own ordering still breaks ties among
+                # candidates the elicited side never proposed
+                a = (alpha0 * (1.0 - q ** alpha_k)).clamp_min(1e-9)
+                # GAIN. (alpha, 1-alpha) fixes the RATIO but also fixes the SUM at 1, and the
+                # sum is an inverse temperature: softmax(2.5*z) is sharper than softmax(z).
+                # Only an argmax is scale-free, and this decode samples. Rescaling by b1+b2
+                # makes alpha0 = b1/(b1+b2) reproduce the fixed pair exactly at q=0, so an
+                # adaptive-vs-fixed comparison isolates the schedule instead of confounding it
+                # with a temperature change -- the same trap as the unnormalised beta in the
+                # original LogitTilt.
+                w1, w2 = a * gain, (1.0 - a) * gain
+                sum_q += float((q * (~done)).sum())
+                sum_alpha += float((a * (~done)).sum())
+            else:
+                w1, w2 = b1, b2
+            probs = _combine(tl, cl, w1, w2, rule, keep, temperature, t_keep, c_keep)
 
             if measure:
                 # What the SAME rule would have done with no truncation, from the same forward
                 # pass: the cost of top-k, isolated from sampling noise by comparing argmaxes.
                 _all = torch.ones_like(keep)
-                full = _combine(tl, cl, b1, b2, rule, _all, temperature, _all, _all)
+                full = _combine(tl, cl, w1, w2, rule, _all, temperature, _all, _all)
                 live = ~done
                 n_live = int(live.sum())
                 if n_live:
@@ -313,7 +383,20 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
             "empty_rate": round(n_empty / n_pos, 6),
             "argmax_agree": round(n_agree / n_pos, 6),
             "mean_mass_kept": round(sum_mass / n_pos, 6),
+            "adaptive": adaptive,
+            "alpha0": alpha0 if adaptive else None,
+            "alpha_k": alpha_k if adaptive else None,
+            "q_metric": q_metric if adaptive else None,
+            # Both are sums over LIVE rows divided by live positions, so they are the mean q
+            # and mean alpha actually applied -- the thing to look at when a schedule does
+            # nothing because q never got near 1.
+            "mean_q": round(sum_q / n_pos, 6) if adaptive else None,
+            "mean_alpha": round(sum_alpha / n_pos, 6) if adaptive else None,
+            "gain": gain if adaptive else None,
         })
+        if adaptive:
+            print(f"  [hf_partial] adaptive a0={alpha0} k={alpha_k} metric={q_metric} "
+                  f"mean_q={sum_q / n_pos:.4f} mean_alpha={sum_alpha / n_pos:.4f}", flush=True)
         print(f"  [hf_partial] rule={rule} k={top_k or 'full'} "
               f"support={sum_support / n_pos:.2f} empty={100.0 * n_empty / n_pos:.2f}% "
               f"agree={100.0 * n_agree / n_pos:.2f}% mass={100.0 * sum_mass / n_pos:.2f}%",
