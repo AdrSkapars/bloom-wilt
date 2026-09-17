@@ -754,7 +754,7 @@ async def run_rollout(cfg: DotDict, prompts_yaml: Dict, output_dir: Path,
     is local — that path owns corruption / token-level search and (via ApiModel) also supports
     a hosted-API evaluator. The pure-async orchestrator below is used only when the target
     itself is a hosted API model (no corruption)."""
-    # `api/<model>` is a separate stream: bloom/api_rollout.py, `api_jailbroken_output`.
+    # `api/<model>` is a separate stream: bloom/api_rollout.py, `partial_tilt_output`.
     if cfg.rollout.target.startswith("api/"):
         from .api_rollout import run_rollout_api
         return run_rollout_api(
@@ -910,7 +910,7 @@ def run_rollout_batched_local(
     if need_jail_model and jail_engine != "hf_full":
         raise RuntimeError(
             f"jailbroken_output.engine={jail_engine!r} not supported -- this section is "
-            f"hf_full only. For a hosted api/ target use api_jailbroken_output instead.")
+            f"hf_full only. For a hosted api/ target use partial_tilt_output instead.")
     jail_vllm = False
     jail_hf   = need_jail_model
 

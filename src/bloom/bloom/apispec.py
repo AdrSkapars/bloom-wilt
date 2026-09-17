@@ -1,6 +1,6 @@
 """Speculative decode for the hosted-API tilt: draft in blocks, verify, rewind on violation.
 
-The single-position rule in apitilt.py spends TWO calls per emitted token -- one per context
+The single-position mix rule in apitilt.py spends TWO calls per emitted token -- one per context
 -- because it needs both distributions at every position before it can pick. That is the
 whole cost model, and it is why a 15-scenario cell takes ~12 minutes.
 
@@ -20,7 +20,7 @@ whole story: a block that survives intact gives N tokens for 2 calls, one that f
 immediately still gives 1 token for 2 calls, i.e. never worse than the single-position rule.
 
 The accepted tokens are pure ELICITED picks -- the target only holds a veto, never a vote --
-so this is a different operating point from apitilt's mixture, closer to elicited-only with a
+so this is a different operating point from apitilt's mix rule, closer to elicited-only with a
 plausibility floor. `floor` is the only dial between the two: raise it and the behaviour
 approaches the mixture while the blocks shorten and the speedup goes away.
 """
@@ -149,9 +149,13 @@ def _driven_spec(handle, jail_runtime_cfg, target_msgs_batch, max_tokens,
     #               construction and the intervention RATE becomes the behaviour dial.
     draft_side = str(jail_runtime_cfg.get("api_spec_draft", "elicited") or "elicited")
     if draft_side not in ("elicited", "target"):
-        raise RuntimeError("api_jailbroken_output.spec_draft=%r unknown (elicited | target)"
+        raise RuntimeError("partial_tilt_output.spec.draft=%r unknown (elicited | target)"
                            % draft_side)
-    theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
+    # Formerly api_stage2_theta, which the mix rule used for a completely different job (its
+    # adaptive=False stage-2 trigger). api_rollout still accepts the old env var and writes
+    # both, so stored runner scripts keep their behaviour.
+    theta = float(jail_runtime_cfg.get("api_spec_theta",
+                                       jail_runtime_cfg.get("api_stage2_theta", 0.95)) or 0.95)
     # Alpha to use AT an intervention, overriding the schedule. <0 keeps the schedule.
     # 0 means the intervened position is resolved by the elicited context alone (subject to
     # the floor), which is what "intervene" ought to mean.

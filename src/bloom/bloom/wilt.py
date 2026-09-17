@@ -639,7 +639,7 @@ def jail_generate(handle: Dict, jail_runtime_cfg: Dict,
     if _engine != "hf_full":
         raise RuntimeError(
             f"jail_generate is hf_full only, got engine={_engine!r}. A hosted api/ target "
-            f"must go through bloom/api_rollout.py (api_jailbroken_output).")
+            f"must go through bloom/api_rollout.py (partial_tilt_output).")
     return _jail_generate_hf(handle, jail_runtime_cfg, target_msgs_batch,
                              max_tokens, temperature, no_think_target)
 

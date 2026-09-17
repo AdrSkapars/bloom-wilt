@@ -185,7 +185,7 @@ def _resolver() -> _TokenResolver:
         path = str(Path.home() / ".cache" / "bloom" / "dsv4_tokenizer.json")
     if not Path(path).exists():
         raise RuntimeError(
-            f"api_tilt rule=overlap needs the target's tokenizer.json to turn top-k candidate "
+            f"api_tilt rule=mix needs the target's tokenizer.json to turn top-k candidate "
             f"strings back into token ids, and none is at {path}. Fetch it once:\n"
             f"  curl -L -o {path} https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731"
             f"/resolve/main/tokenizer.json\n"
@@ -598,10 +598,10 @@ def _record_cost(client, tag: str, extra: Optional[Dict] = None) -> None:
         pass
 
 
-def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
+def _driven_mix(handle: Dict, jail_runtime_cfg: Dict,
                     target_msgs_batch: List[List[Dict]], max_tokens: int,
                     temperature: float, no_think_target: bool) -> List[Dict]:
-    """[api_tilt rule=overlap] Token-by-token decode that combines the two contexts.
+    """[api_tilt rule=mix] Token-by-token decode that combines the two contexts.
 
     Both contexts are advanced in lockstep over the SAME emitted tokens, and at each
     position:
@@ -636,7 +636,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # the target's own draw, which costs nothing because that call already sampled one.
     fb_mode = str(jail_runtime_cfg.get("api_fallback", "jail_descend") or "jail_descend")
     if fb_mode not in ("jail_resample", "jail_descend", "target_sample"):
-        raise RuntimeError(f"api_jailbroken_output.fallback={fb_mode!r} unknown "
+        raise RuntimeError(f"partial_tilt_output.mix.fallback={fb_mode!r} unknown "
                            f"(jail_resample | jail_descend | target_sample)")
     # MIXTURE weights, in PROBABILITY space over the UNION of the two top-k sets:
     # score = b1*p_target + b2*p_elicited, a side that did not propose a token contributing 0.
@@ -659,7 +659,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     # "stage2" hands the position to the elicited resample instead.
     floor_action = str(jail_runtime_cfg.get("api_floor_action", "stage2") or "stage2")
     if floor_action not in ("repick", "stage2"):
-        raise RuntimeError(f"api_jailbroken_output.floor_action={floor_action!r} unknown "
+        raise RuntimeError(f"partial_tilt_output.mix.floor_action={floor_action!r} unknown "
                            f"(repick | stage2)")
     # STAGE-2 TRIGGER, on q = the share of the ELICITED context's own top-k mass sitting on
     # tokens the overlap cannot deliver. Keying on the elicited side is deliberate: the
@@ -672,7 +672,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     #                which is never empty because the target's own top-k is in it.
     stage2_mode = str(jail_runtime_cfg.get("api_stage2", "threshold") or "threshold")
     if stage2_mode not in ("threshold", "never"):
-        raise RuntimeError(f"api_jailbroken_output.stage2={stage2_mode!r} unknown "
+        raise RuntimeError(f"partial_tilt_output.mix.stage2={stage2_mode!r} unknown "
                            f"(threshold | never)")
     stage2_theta = float(jail_runtime_cfg.get("api_stage2_theta", 0.95) or 0.95)
     # HOW DISAGREEMENT IS MEASURED. Every schedule alpha(q) is monotone in q, so the shape
@@ -691,7 +691,7 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     #                       something the target would never pick.
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
     if q_metric not in ("elicited_outside", "tv", "margin"):
-        raise RuntimeError(f"api_jailbroken_output.q_metric={q_metric!r} unknown "
+        raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
                            f"(elicited_outside | tv | margin)")
     # The last two stochastic paths in the decode: an unresolvable surface form, and the
     # revert when nothing the elicited side offers clears the floor. Both otherwise take a
@@ -727,9 +727,9 @@ def _driven_overlap(handle: Dict, jail_runtime_cfg: Dict,
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.6))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     if adaptive and not (0.0 <= alpha0 <= 1.0):
-        raise RuntimeError(f"api_jailbroken_output.alpha0={alpha0!r} must be in [0, 1]")
+        raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
     if adaptive and alpha_k <= 0.0:
-        raise RuntimeError(f"api_jailbroken_output.alpha_k={alpha_k!r} must be > 0")
+        raise RuntimeError(f"partial_tilt_output.mix.alpha_k={alpha_k!r} must be > 0")
     # jail_resample only: how many draws from the elicited distribution to try before giving
     # up and keeping the most target-plausible of them.
     fb_tries = int(jail_runtime_cfg.get("api_fb_tries", 5) or 5)
@@ -1148,9 +1148,11 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
         from .apispec import _driven_spec
         return _driven_spec(handle, jail_runtime_cfg, target_msgs_batch,
                             max_tokens, temperature, no_think_target)
-    if _rule == "overlap":
-        return _driven_overlap(handle, jail_runtime_cfg, target_msgs_batch,
-                               max_tokens, temperature, no_think_target)
+    # api_rollout normalises "overlap" to "mix", but accept both here so the engine can be
+    # driven directly from a stored runtime cfg without going through that normalisation.
+    if _rule in ("mix", "overlap"):
+        return _driven_mix(handle, jail_runtime_cfg, target_msgs_batch,
+                           max_tokens, temperature, no_think_target)
     client: ApiTiltTarget = handle["client"]
     target_only = bool(jail_runtime_cfg.get("target_only"))
     b2 = float(jail_runtime_cfg.get("b2", 2.0))
@@ -1220,4 +1222,4 @@ def _jail_generate_api(handle: Dict, jail_runtime_cfg: Dict,
 
 
 __all__ = ["ApiTiltTarget", "load_api_target", "_jail_generate_api",
-           "_driven_overlap"]
+           "_driven_mix"]

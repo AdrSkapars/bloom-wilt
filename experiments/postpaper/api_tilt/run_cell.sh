@@ -1,5 +1,7 @@
 #!/bin/bash
-# run_cell.sh <arm> [rounds]     arm = vanilla | elicited | overlap
+# run_cell.sh <arm> [rounds]     arm = vanilla | elicited | mix | spec
+# ("overlap" is still accepted as an alias for "mix" -- the rule scored the top-k
+#  INTERSECTION when it was named, and has scored the UNION since the fork.)
 #
 # Generalised launcher: any behaviour x any hosted model x any arm. Supersedes run_api.sh
 # (which is self_harm + DeepSeek only); kept as a separate file because run_api.sh was
@@ -16,7 +18,7 @@
 set -e
 cd "$(dirname "$0")/../../.."
 
-ARM="${1:-overlap}"
+ARM="${1:-mix}"
 ROUNDS="${2:-1}"
 BEH="${BEH:-self_harm}"
 MODEL="${MODEL:-dsv4}"
@@ -103,14 +105,14 @@ case "$ARM" in
   elicited)
     export BLOOM_FOLDER=${ROOT}/api_elicited_15s
     export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_JAIL_B1=0 BLOOM_API_JAIL_B2=1 ;;
-  overlap)
+  mix|overlap)
     B2="${BLOOM_API_JAIL_B2:-1}"
     FL="${BLOOM_API_FLOOR:-1e-05}"
     TH="${BLOOM_API_STAGE2_THETA:-0.95}"
     S2="${BLOOM_API_STAGE2:-threshold}"
     FA="${BLOOM_API_FLOOR_ACTION:-stage2}"
     FB="${BLOOM_API_FALLBACK:-jail_descend}"
-    export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=overlap
+    export BLOOM_API_JAIL_ENABLED=1 BLOOM_API_RULE=mix
     export BLOOM_API_JAIL_B2=$B2 BLOOM_API_FLOOR=$FL BLOOM_API_STAGE2=$S2            BLOOM_API_STAGE2_THETA=$TH BLOOM_API_FLOOR_ACTION=$FA BLOOM_API_FALLBACK=$FB
     if [ "$B2" = "1" ];              then BSUF="";  else BSUF="_b${B2}";   fi
     if [ "$FL" = "1e-05" ];          then LSUF="";  else LSUF="_fl${FL}";  fi
@@ -143,7 +145,7 @@ case "$ARM" in
     export BLOOM_API_SPEC_BLOCK=$BL BLOOM_API_FLOOR=$FL
     if [ "$FL" = "1e-05" ]; then LSUF=""; else LSUF="_fl${FL}"; fi
     export BLOOM_FOLDER=${ROOT}/api_spec_b${BL}${LSUF}_15s ;;
-  *) echo "usage: run_cell.sh [vanilla|elicited|overlap|spec] [rounds]"; exit 2 ;;
+  *) echo "usage: run_cell.sh [vanilla|elicited|mix|spec] [rounds]"; exit 2 ;;
 esac
 
 # RUN_TAG appends a suffix to the folder so an identical config can be repeated

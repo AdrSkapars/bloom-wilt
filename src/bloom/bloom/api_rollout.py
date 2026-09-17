@@ -1,4 +1,4 @@
-"""Hosted-API rollout stream. Owns `api_jailbroken_output`; Fireworks only.
+"""Hosted-API rollout stream. Owns `partial_tilt_output`; Fireworks only.
 
 Forked from rollout.py, which owns `jailbroken_output` and is hf_full only. Neither
 accepts the other's engine. Only the batched-jail lockstep branch is carried over -- an
@@ -26,7 +26,7 @@ def run_rollout_api(
     ideation_results: Dict,
     variations_override: Optional[List[Dict]] = None,
 ) -> Dict[str, Any]:
-    """Rollout for a hosted `api/` target driven by `api_jailbroken_output`."""
+    """Rollout for a hosted `api/` target driven by `partial_tilt_output`."""
     print("\n" + "=" * 60, flush=True)
     print("ROLLOUT STAGE - STARTED (api)", flush=True)
     print("=" * 60, flush=True)
@@ -39,7 +39,7 @@ def run_rollout_api(
     _provider = (os.environ.get("BLOOM_TARGET_API", "") or "fireworks").strip().lower()
     if _provider not in _FIREWORKS_ONLY:
         raise RuntimeError(
-            f"api_jailbroken_output supports Fireworks only (got {_provider!r}): the decode "
+            f"partial_tilt_output supports Fireworks only (got {_provider!r}): the decode "
             f"needs /completions to accept an integer-array prompt with echo+logprobs.")
 
     behavior_name = cfg.behavior_name
@@ -60,7 +60,22 @@ def run_rollout_api(
     target_temperature = float(cfg.rollout.get("target_temperature", temperature))
     evaluator_model_id = cfg.rollout.model
 
-    jail_cfg = cfg.get("api_jailbroken_output", {}) or {}
+    # partial_tilt_output superseded partial_tilt_output when the block stopped being
+    # api-specific. Both the old top-level key and the old FLAT knob layout stay readable so
+    # a stored cfg.json can still be relaunched: _mixk/_speck check the sub-block first and
+    # fall back to the pre-split flat name.
+    jail_cfg = cfg.get("partial_tilt_output", cfg.get("api_jailbroken_output", {})) or {}
+    _mix_cfg = jail_cfg.get("mix", {}) or {}
+    _spec_cfg = jail_cfg.get("spec", {}) or {}
+
+    def _mixk(name, default):
+        return _mix_cfg[name] if name in _mix_cfg else jail_cfg.get(name, default)
+
+    def _speck(name, default, flat=None):
+        if name in _spec_cfg:
+            return _spec_cfg[name]
+        return jail_cfg.get(flat or ("spec_" + name), default)
+
     # enabled=False IS the un-steered b1=1,b2=0 corner (vanilla/BoN): the elicited context is
     # never built or stepped. There is no separate target_only knob.
     _steered = bool(jail_cfg.get("enabled", False))
@@ -72,13 +87,28 @@ def run_rollout_api(
     if bool((cfg.get("jailbroken_output", {}) or {}).get("enabled", False)):
         raise RuntimeError(
             "jailbroken_output is enabled alongside an api/ target. That section is the "
-            "paper's hf_full LogitTilt; use api_jailbroken_output instead.")
+            "paper's hf_full LogitTilt; use partial_tilt_output instead.")
 
     jail_system_prompt = prompts_yaml.get("jailbroken_output_system_prompt", "")
     if _steered and not jail_system_prompt:
         raise RuntimeError(
-            "api_jailbroken_output.enabled=True requires 'jailbroken_output_system_prompt' "
+            "partial_tilt_output.enabled=True requires 'jailbroken_output_system_prompt' "
             "in the behaviour yaml.")
+    _engine = str(jail_cfg.get("engine", "api") or "api")
+    if _engine != "api":
+        raise RuntimeError(
+            f"partial_tilt_output.engine={_engine!r} is not implemented. Only 'api' exists "
+            f"today; 'hf_full' would run the same partial-information rule against a local "
+            f"model, which is the oracle-ladder ablation and has no code yet.")
+    # "overlap" named the rule while stage 1 picked from the top-k INTERSECTION. It has scored
+    # the UNION since the fork, so the name is "mix" -- but stored runs and runner scripts still
+    # say overlap, and they should keep launching.
+    _rule = str(jail_cfg.get("rule", "corner") or "corner")
+    if _rule == "overlap":
+        _rule = "mix"
+    if _rule not in ("corner", "mix", "spec"):
+        raise RuntimeError(f"partial_tilt_output.rule={_rule!r} unknown (corner | mix | spec)")
+
     jail_runtime_cfg = {
         "engine": "api_tilt",
         "enabled": _steered,
@@ -88,27 +118,31 @@ def run_rollout_api(
         "b1": (float(jail_cfg["b1"]) if jail_cfg.get("b1") is not None else 1.0),
         "b2": float(jail_cfg.get("b2", 1.0)),   # also the overlap score's elicited weight
         "target_floor": 0.0,   # needs full-vocab target logits; impossible over a text API
-        "api_rule": str(jail_cfg.get("rule", "corner") or "corner"),
-        "api_fallback": str(jail_cfg.get("fallback", "jail_descend") or "jail_descend"),
+        "api_rule": _rule,
         "api_top_k": int(jail_cfg.get("top_k", 5) or 5),
         "api_floor": float(jail_cfg.get("floor", 0.0) or 0.0),
-        "api_floor_action": str(jail_cfg.get("floor_action", "stage2") or "stage2"),
-        "api_fb_tries": int(jail_cfg.get("fb_tries", 10) or 10),
-        "api_stage2": str(jail_cfg.get("stage2", "threshold") or "threshold"),
-        "api_stage2_theta": float(jail_cfg.get("stage2_theta", 0.95) or 0.95),
-        "api_q_metric": str(jail_cfg.get("q_metric", "elicited_outside") or "elicited_outside"),
-        "api_spec_block": int(jail_cfg.get("spec_block", 10) or 10),
-        "api_spec_draft_temp": float(jail_cfg.get("spec_draft_temp", -1.0)),
-        "api_spec_draft": str(jail_cfg.get("spec_draft", "elicited") or "elicited"),
-        "api_spec_intervene_alpha": float(jail_cfg.get("spec_intervene_alpha", -1.0)),
-        "api_spec_burst": int(jail_cfg.get("spec_burst", 0) or 0),
-        "api_spec_flip": bool(jail_cfg.get("spec_flip", False)),
-        "api_det_fallback": bool(jail_cfg.get("det_fallback", True)),
-        "api_target_every": int(jail_cfg.get("target_every", 0) or 0),
-        "api_sample_temp": float(jail_cfg.get("sample_temp", 0.05) or 0.05),
-        "api_adaptive": bool(jail_cfg.get("adaptive", True)),
-        "api_alpha0": float(jail_cfg.get("alpha0", 0.6)),
-        "api_alpha_k": float(jail_cfg.get("alpha_k", 10.0) or 10.0),
+        # rule="mix" knobs; rule="spec" resolves every rewind with the mix rule and reads them too
+        "api_fallback": str(_mixk("fallback", "jail_descend") or "jail_descend"),
+        "api_floor_action": str(_mixk("floor_action", "stage2") or "stage2"),
+        "api_fb_tries": int(_mixk("fb_tries", 10) or 10),
+        "api_stage2": str(_mixk("stage2", "threshold") or "threshold"),
+        "api_stage2_theta": float(_mixk("stage2_theta", 0.95) or 0.95),
+        "api_q_metric": str(_mixk("q_metric", "elicited_outside") or "elicited_outside"),
+        "api_det_fallback": bool(_mixk("det_fallback", True)),
+        "api_target_every": int(_mixk("target_every", 0) or 0),
+        "api_sample_temp": float(_mixk("sample_temp", 0.05) or 0.05),
+        "api_adaptive": bool(_mixk("adaptive", True)),
+        "api_alpha0": float(_mixk("alpha0", 0.6)),
+        "api_alpha_k": float(_mixk("alpha_k", 10.0) or 10.0),
+        # rule="spec" only. api_spec_theta was formerly api_stage2_theta, which meant the mix
+        # stage-2 trigger under one rule and this accept threshold under the other.
+        "api_spec_block": int(_speck("block", 10) or 10),
+        "api_spec_draft_temp": float(_speck("draft_temp", -1.0)),
+        "api_spec_draft": str(_speck("draft", "elicited") or "elicited"),
+        "api_spec_theta": float(_speck("theta", 0.95, flat="stage2_theta") or 0.95),
+        "api_spec_intervene_alpha": float(_speck("intervene_alpha", -1.0)),
+        "api_spec_burst": int(_speck("burst", 0) or 0),
+        "api_spec_flip": bool(_speck("flip", False)),
     }
 
     if evaluator_model_id.startswith("local/"):
@@ -127,7 +161,7 @@ def run_rollout_api(
 
     # one hosted handle serves both contexts (self-jail; no weights)
     jail_runtime_cfg["hf"] = load_api_target(target_model_id)
-    print(f"  [api_jailbroken_output] target={target_model_id} "
+    print(f"  [partial_tilt_output] target={target_model_id} "
           f"rule={jail_runtime_cfg['api_rule']} "
           f"fb={jail_runtime_cfg['api_fallback']} "
           f"(b1={jail_runtime_cfg['b1']:g}, b2={jail_runtime_cfg['b2']:g})", flush=True)
@@ -212,7 +246,7 @@ def run_rollout_api(
     # jail PoE. _jail_generate_hf batches the whole active chunk in ONE call per turn
     # (B slots), far more GPU-efficient than the per-variation serial path below.
     jail_var_batch = max(1, int(os.environ.get("BLOOM_API_JAIL_VAR_BATCH",
-                                (cfg.get("api_jailbroken_output", {}) or {}).get("var_batch", 12))))
+                                (cfg.get("partial_tilt_output", {}) or {}).get("var_batch", 12))))
     _jail_hf = jail_runtime_cfg["hf"]
 
     # One "seed" per transcript (variation x rep), honoring resume/skip. freeze_input
@@ -389,8 +423,8 @@ def run_rollout_api(
             "evaluator": evaluator_model_id,
             "target":    target_model_id,
             "max_turns": max_turns,
-            "api_jailbroken_output": {k: v for k, v in jail_runtime_cfg.items()
-                                      if k != "hf"},   # handle is not serialisable
+            "partial_tilt_output": {k: v for k, v in jail_runtime_cfg.items()
+                                    if k != "hf"},   # handle is not serialisable
         },
         "rollouts":        rollouts,
         "successful_count": len(rollouts),
