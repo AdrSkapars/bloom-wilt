@@ -22,9 +22,13 @@ Layout:
 
 First run, from the repo root:
 
-    pip install modal && modal setup
-    modal secret create bloom-keys OPENROUTER_API_KEY=sk-...    # never checked in
+    pip install modal
+    modal setup
     modal run experiments/postpaper/partial_tilt/modal_ksweep.py --ks 0
+
+No secret to create: the keys are read from this machine at run time, from $env:OPENROUTER_API_KEY
+or from .env.local, and passed through Secret.from_dict (evaluated locally). Nothing is stored
+in Modal, nothing reaches a command line or shell history, nothing enters the image.
 
 Start with k=0 ALONE. It is the anchor: no truncation, so the engine must reproduce the
 paper's full-vocab LogitTilt exactly. Check it against a jailbroken_output run at the same b2
@@ -42,7 +46,9 @@ import sys
 
 import modal
 
-REPO = "/root/bloom-wilt"
+REPO = "/root/bloom-wilt"                       # inside the container
+REPO_LOCAL = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))   # on this machine
 HF_CACHE = "/cache/hf"
 RUNS = "/runs"
 
@@ -68,15 +74,51 @@ image = (
     # The repo itself. add_local_dir is applied last so a code edit does not invalidate the
     # (slow) pip layer above -- iterating on hftilt.py should not mean reinstalling torch.
     .add_local_dir(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        REPO_LOCAL,
         remote_path=REPO,
-        ignore=["~*", ".git", "**/__pycache__", "**/runs_*", "paper", "*.pdf"],
+        # Precise, NOT "**/runs_*": that glob also matches
+        # experiments/bloom/_banks/runs_hyperparam/..., which holds the kickoff banks the
+        # runner needs, and the first run would have died looking for its scenarios. The
+        # banks are ~800K, so they ship.
+        ignore=[".git/**", "**/__pycache__/**",
+                "experiments/postpaper/runs_*/**", "paper/**", "*.pdf"],
     )
 )
 
 app = modal.App("bloom-partial-tilt")
 hf_vol = modal.Volume.from_name("bloom-hf-cache", create_if_missing=True)
 runs_vol = modal.Volume.from_name("bloom-runs", create_if_missing=True)
+
+_KEYS = ("OPENROUTER_API_KEY", "FIREWORKS_API_KEY", "ANTHROPIC_API_KEY", "HF_TOKEN")
+
+
+def _local_keys() -> dict:
+    """Collect API keys on the LOCAL machine at `modal run` time.
+
+    Secret.from_dict is evaluated locally, so the values go straight from this shell into
+    Modal's encrypted transport: nothing is stored as a named Modal secret, nothing appears
+    on a command line where it would land in shell history, and nothing is written to the
+    image or the repo.
+
+    Two sources, in order: the environment, then .env.local (gitignored, and already the
+    file every runner here sources). Must be import-safe -- Modal imports this module inside
+    the container too, where neither source exists and the secret is already injected.
+    """
+    found = {k: os.environ[k] for k in _KEYS if os.environ.get(k)}
+    try:
+        env_path = os.path.join(REPO_LOCAL, ".env.local")
+        if os.path.isfile(env_path):
+            for line in open(env_path, encoding="utf-8"):
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k in _KEYS and v and k not in found:
+                    found[k] = v
+    except OSError:
+        pass
+    return found
 
 
 @app.function(
@@ -86,7 +128,7 @@ runs_vol = modal.Volume.from_name("bloom-runs", create_if_missing=True)
                                # two-forward-passes-per-token decode is bandwidth-bound, so it
                                # can cost MORE per run. L40S if var_batch needs raising.
     volumes={HF_CACHE: hf_vol, RUNS: runs_vol},
-    secrets=[modal.Secret.from_name("bloom-keys")],
+    secrets=[modal.Secret.from_dict(_local_keys())],
     timeout=24 * 60 * 60,      # container ceiling; one k is minutes, the sweep is under an hour
 )
 def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
