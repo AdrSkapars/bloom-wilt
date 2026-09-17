@@ -67,7 +67,10 @@ export BLOOM_SEED=$SEED
 
 # jailbroken_output stays OFF: enabling both is refused, and the point is to reach the same
 # decode through partial_tilt_output so the information level is a knob rather than a fork.
-export BLOOM_JAIL_ENABLED=0
+# It has no BLOOM_JAIL_ENABLED -- cfg has enabled=False and the ONLY thing that flips it is
+# BLOOM_JAIL_MODEL being set, so unsetting that is the actual off switch. It matters because
+# `set -a; . ./.env.local` above exports whatever that file defines.
+unset BLOOM_JAIL_MODEL
 export BLOOM_PTILT_ENABLED=1
 export BLOOM_PTILT_ENGINE=hf_partial
 export BLOOM_PTILT_RULE=$RULE
