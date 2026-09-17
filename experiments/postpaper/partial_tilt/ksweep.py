@@ -97,6 +97,31 @@ def trunc_stats(d):
     return out
 
 
+def vocab_size(runs):
+    """Vocabulary size, read off the k=0 run rather than hardcoded.
+
+    At top_k=0 the mask keeps everything, so that run's mean_support IS the full vocab -- the
+    table's denominator comes from the same measurement it is describing, and a different
+    model needs no edit here.
+    """
+    for d in runs:
+        st_ = trunc_stats(d)
+        if st_ and not st_.get("top_k"):
+            return st_["mean_support"]
+    return None
+
+
+def pct(x, V):
+    """Share of the vocabulary, to three significant figures.
+
+    Fixed decimals are useless across this range: k=1 and k=5 are 0.000403% and 0.00201%, and
+    rounding either to 4dp collapses both to 0.0004% / 0.0020%.
+    """
+    if not V:
+        return "-"
+    return "%.3g%%" % (100.0 * x / V)
+
+
 def sort_key(name):
     """k=full sorts last: it is the anchor the truncated points are measured against."""
     if "_kfull" in name:
@@ -107,31 +132,39 @@ def sort_key(name):
     return (0, 10 ** 9)
 
 
-HDR = ("%-26s %10s %3s %9s %8s %8s %9s %8s %8s %9s"
-       % ("run", "eff_k", "n", "presence", "arith%", "geom%", "min", "empty", "agree",
-          "positions"))
+# No n column: it is 15 on every row, so it carries nothing -- but a row where it ISN'T is
+# exactly what must not pass unnoticed, so a short run is flagged inline instead.
+HDR = ("%-14s %8s %10s %9s %11s %9s %8s %8s %9s %8s %8s"
+       % ("run", "k", "(vocab)", "eff_k", "(vocab)", "presence", "arith%", "geom%",
+          "min", "empty", "agree"))
 if __name__ == "__main__":
     beh = sys.argv[1] if len(sys.argv) > 1 else "self_harm"
     mdir = sys.argv[2] if len(sys.argv) > 2 else "Qwen_Qwen3.5-4B"
     cell = os.path.join(BASE, beh, mdir)
     runs = sorted(glob.glob(os.path.join(cell, "*")), key=lambda p: sort_key(os.path.basename(p)))
-    print("%s / %s" % (beh, mdir))
+    V = vocab_size(runs)
+    quals = {d: quality(d) for d in runs if os.path.isdir(d)}
+    full_n = max((q["n"] for q in quals.values() if q), default=0)
+    print("%s / %s   vocab %s   n=%d per run" % (beh, mdir, ("%d" % V) if V else "unknown", full_n))
     print(HDR)
     print("-" * len(HDR))
     for d in runs:
         if not os.path.isdir(d):
             continue
-        q = quality(d)
+        q = quals.get(d)
         if not q:
             continue
         s = trunc_stats(d)
         name = os.path.basename(d).replace("ptilt_", "").replace("_15s", "")
+        short = "" if q["n"] == full_n else "   [n=%d, SHORT]" % q["n"]
         if s:
-            e = s["eff_k"]
-            print("%-26s %10s %3d %9.1f %8.2f %8.2f %9.1e %7.2f%% %7.2f%% %9d"
-                  % (name[:26], ("%.2f" % e if e < 1000 else "%.0f" % e), q["n"], q["pres"],
-                     q["arith"], q["geom"], q["min"], 100 * s["empty_rate"],
-                     100 * s["argmax_agree"], s["positions"]))
+            e, k = s["eff_k"], (s.get("top_k") or 0) or (V or 0)
+            print("%-14s %8d %10s %9s %11s %9.1f %8.2f %8.2f %9.1e %7.2f%% %7.2f%%%s"
+                  % (name[:14], k, pct(k, V),
+                     ("%.2f" % e if e < 1000 else "%.0f" % e), pct(e, V),
+                     q["pres"], q["arith"], q["geom"], q["min"],
+                     100 * s["empty_rate"], 100 * s["argmax_agree"], short))
         else:
-            print("%-26s %10s %3d %9.1f %8.2f %8.2f %9.1e"
-                  % (name[:26], "-", q["n"], q["pres"], q["arith"], q["geom"], q["min"]))
+            print("%-14s %8s %10s %9s %11s %9.1f %8.2f %8.2f %9.1e%s"
+                  % (name[:14], "-", "-", "-", "-", q["pres"], q["arith"],
+                     q["geom"], q["min"], short))
