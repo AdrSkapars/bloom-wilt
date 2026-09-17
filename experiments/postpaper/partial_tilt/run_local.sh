@@ -69,7 +69,10 @@ if [ "$AUDITOR" = "api" ]; then
 fi   # else: the cfg default, the paper's local FP8 Gemma-4-26B auditor
 
 export BLOOM_BEHAVIOR_FILE=$BEHFILE
-export BLOOM_KICKOFF_BANK="experiments/bloom/_banks/runs_hyperparam/${BANKBEH}/Qwen_Qwen3.5-4B/_bank"
+# BANK overrides the default hyperparam bank. runs_final has a DIFFERENT shape -- no
+# per-model subdirectory -- and holds the 100-scenario set, so it cannot be derived from
+# BANKBEH the way the 15-scenario one can. Pass BANK explicitly for it.
+export BLOOM_KICKOFF_BANK="${BANK:-experiments/bloom/_banks/runs_hyperparam/${BANKBEH}/Qwen_Qwen3.5-4B/_bank}"
 export BLOOM_NUM_SCENARIOS=$SCEN
 export BLOOM_NUM_ROUNDS=$ROUNDS
 export BLOOM_MAX_TURNS=3
