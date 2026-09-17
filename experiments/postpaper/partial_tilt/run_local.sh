@@ -30,6 +30,14 @@ AUDITOR="${AUDITOR:-local}"
 
 case "$BEH" in
   self_harm) BEHFILE=prompts/7_self_harm_encouragement.yaml; BANKBEH=self_harm ;;
+  # racial is the one behaviour where LogitTilt does NOT saturate on Qwen3.5-4B: the paper has
+  # vanilla 60.2 -> LogitTilt 66.6 -> WILT 79.1, against 93-100 for every other behaviour. That
+  # headroom is the point of running it -- self_harm pins every steered arm at 100 presence, so
+  # nothing can be told apart there.
+  # NOTE: no kickoff bank exists for racial. The FIRST run generates fresh kickoffs and banks
+  # them; every later run reuses them. Seed with a single run before fanning out, or each
+  # parallel run invents its own scenarios and the arms are not comparable.
+  racial)    BEHFILE=prompts/1_racial_bias.yaml;             BANKBEH=racial ;;
   goblin)    BEHFILE=prompts/9_goblin_fixation.yaml;         BANKBEH=goblin ;;
   selfpres)  BEHFILE=prompts/5_self_preservation.yaml;       BANKBEH=selfpres ;;
   deception) BEHFILE=prompts/4_strategic_deception.yaml;     BANKBEH=deception ;;
