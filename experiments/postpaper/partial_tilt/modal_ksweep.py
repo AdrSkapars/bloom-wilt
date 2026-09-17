@@ -133,7 +133,12 @@ def _local_keys() -> dict:
                                # can cost MORE per run. L40S if var_batch needs raising.
     volumes={HF_CACHE: hf_vol, RUNS: runs_vol},
     secrets=[modal.Secret.from_dict(_local_keys())],
-    timeout=24 * 60 * 60,      # container ceiling; one k is minutes, the sweep is under an hour
+    # A k is ~5 minutes; 45 leaves room for a slow start (13 containers reading 8GB off the
+    # weights Volume at once) without turning a hung API call into hours of billed GPU. The
+    # 24h ceiling this replaced was the real money risk here -- not idling, which costs one
+    # scaledown_window (60s) per container, but a wedged run nobody is watching.
+    timeout=45 * 60,
+    scaledown_window=60,       # explicit: the default, but it is the knob that sets idle cost
 )
 def sweep(ks: str = "0", beh: str = "self_harm", model: str = "qwen",
           rule: str = "poe", b2: str = "1.5", scen: str = "15", var_batch: str = "15"):
