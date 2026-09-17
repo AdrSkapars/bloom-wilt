@@ -123,6 +123,48 @@ def test_empty_intersection_is_reachable():
     check("the same position is non-empty under mix", int(_support_mask(tl, cl, 2, "mix").sum()) == 4)
 
 
+def test_poe_union_zero_fills_the_missing_side():
+    """poe_union keeps the union and ADDS ZERO for whichever side did not propose a token."""
+    from bloom.bloom.hftilt import _side_masks
+    # A k whose intersection is non-empty in every row: the second assertion below compares
+    # the two rules ON the intersection, and at small k over random logits there isn't one.
+    for k in range(2, V + 1):
+        t_keep, c_keep = _side_masks(TL, CL, k)
+        if bool((t_keep & c_keep).any(-1).all()):
+            break
+    keep = t_keep | c_keep
+    got = _combine(TL, CL, 1.0, 2.0, "poe_union", keep, 1.0, t_keep, c_keep)
+    want_z = 1.0 * torch.where(t_keep, TL, torch.zeros_like(TL))         + 2.0 * torch.where(c_keep, CL, torch.zeros_like(CL))
+    want = torch.softmax(torch.where(keep, want_z, torch.full_like(want_z, float("-inf"))), -1)
+    check("poe_union = zero-filled logit sum over the union",
+          torch.allclose(got, want, atol=1e-6))
+
+    # On the INTERSECTION the two rules must agree exactly: both sides contributed a real
+    # logit there, so zero-filling never applied. Only the union-minus-intersection differs.
+    both = t_keep & c_keep
+    p_poe = _combine(TL, CL, 1.0, 2.0, "poe", both, 1.0)
+    # PER ROW. poe_union leaks mass to the union-only candidates, and each row leaks a
+    # different amount, so a single renormalisation across the whole tensor compares rows
+    # against each other rather than each row against itself.
+    worst = 0.0
+    for i in range(B):
+        m = both[i]
+        a = p_poe[i][m]; a = a / a.sum()
+        c = got[i][m]; c = c / c.sum()
+        worst = max(worst, float((a - c).abs().max()))
+    check("poe and poe_union rank the intersection identically",
+          worst < 1e-5, "max|diff|=%.2e" % worst)
+
+    # The shift-invariance that holds for poe must FAIL here -- that is the cost of zero-fill,
+    # and it should be visible in a test rather than only in a comment.
+    shifted = _combine(TL + 3.0, CL, 1.0, 2.0, "poe_union", keep, 1.0, t_keep, c_keep)
+    check("poe_union is NOT shift-invariant (0 is an arbitrary reference)",
+          not torch.allclose(got, shifted, atol=1e-4))
+    p1 = _combine(TL, CL, 1.0, 2.0, "poe", both, 1.0)
+    p2 = _combine(TL + 3.0, CL, 1.0, 2.0, "poe", both, 1.0)
+    check("  ...while poe still is", torch.allclose(p1, p2, atol=1e-6))
+
+
 def test_decode_loop_with_a_stub_model():
     """Drive _driven_hf_partial with a fake HF model: fixed logits, no weights.
 
@@ -213,6 +255,7 @@ def test_decode_loop_with_a_stub_model():
 
 
 for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_support_is_union,
+           test_poe_union_zero_fills_the_missing_side,
            test_renormalisation_is_a_noop_for_poe, test_probabilities_live_only_on_the_support,
            test_empty_intersection_is_reachable, test_decode_loop_with_a_stub_model):
     print(fn.__name__)

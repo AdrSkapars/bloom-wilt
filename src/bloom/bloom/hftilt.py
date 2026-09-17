@@ -62,8 +62,8 @@ def _record_stats(tag: str, rec: Dict) -> None:
         pass
 
 
-def _support_mask(tl, cl, top_k: int, rule: str):
-    """Boolean [B, V] mask of candidates that survive truncation under `rule`.
+def _side_masks(tl, cl, top_k: int):
+    """Per-side top-k masks, (target, elicited).
 
     top_k=0 keeps everything, which is what makes k=0 the untruncated anchor rather than a
     branch. For "poe" the survivors are the INTERSECTION: a geometric mixture needs a finite
@@ -71,7 +71,8 @@ def _support_mask(tl, cl, top_k: int, rule: str):
     survivors are the UNION, since an arithmetic mixture lets one side carry a token alone.
     """
     if top_k <= 0:
-        return torch.ones_like(tl, dtype=torch.bool)
+        ones = torch.ones_like(tl, dtype=torch.bool)
+        return (ones, ones)
     V = tl.shape[-1]
     k = min(int(top_k), V)
 
@@ -95,10 +96,20 @@ def _support_mask(tl, cl, top_k: int, rule: str):
 
     t_keep = _top_mask(tl)
     c_keep = _top_mask(cl)
-    return (t_keep | c_keep) if rule == "mix" else (t_keep & c_keep)
+    return (t_keep, c_keep)
 
 
-def _combine(tl, cl, b1: float, b2: float, rule: str, keep, temperature: float):
+def _support_mask(tl, cl, top_k: int, rule: str):
+    """Boolean [B, V] mask of candidates that survive truncation under `rule`."""
+    t_keep, c_keep = _side_masks(tl, cl, top_k)
+    # "poe" needs a finite logprob from BOTH sides, so only the intersection survives.
+    # "poe_union" and "mix" let a candidate through on one side alone -- they differ in what
+    # the absent side then contributes, not in which candidates are eligible.
+    return (t_keep & c_keep) if rule == "poe" else (t_keep | c_keep)
+
+
+def _combine(tl, cl, b1: float, b2: float, rule: str, keep, temperature: float,
+             t_keep=None, c_keep=None):
     """Scores over the surviving support, as a probability distribution per row.
 
     "poe"  -- z = b1*l_t + b2*l_e, softmax over the survivors. Renormalising each side over
@@ -126,7 +137,19 @@ def _combine(tl, cl, b1: float, b2: float, rule: str, keep, temperature: float):
         if temperature > 0 and abs(temperature - 1.0) > 1e-9:
             w = w.clamp_min(0).pow(1.0 / max(temperature, 1e-6))
         return w / w.sum(-1, keepdim=True).clamp_min(1e-12)
-    z = b1 * tl + b2 * cl
+    if rule == "poe_union" and t_keep is not None and c_keep is not None:
+        # A candidate the other side did not propose keeps its own side's logit and has ZERO
+        # ADDED for the missing one, rather than being dropped. Same arithmetic as "poe"
+        # wherever both sides proposed, so it differs only on the union minus the intersection.
+        #
+        # CAVEAT, and it is not small: a logit has no absolute scale -- softmax is invariant to
+        # adding a constant to every logit -- so "0" is an arbitrary reference point, and this
+        # rule is the only one here that is NOT shift-invariant. Adding c to every target logit
+        # leaves "poe" and "mix" identical and moves this one. Whether 0 sits high or low among
+        # a model's tail logits is a property of the checkpoint, not of the method.
+        z = b1 * torch.where(t_keep, tl, torch.zeros_like(tl))             + b2 * torch.where(c_keep, cl, torch.zeros_like(cl))
+    else:
+        z = b1 * tl + b2 * cl
     z = torch.where(keep, z, torch.full_like(z, _NEG_INF))
     return torch.softmax(z / max(temperature, 1e-6), dim=-1)
 
@@ -153,10 +176,11 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     b2 = float(jail_runtime_cfg.get("b2", 1.0))
     top_k = int(jail_runtime_cfg.get("api_top_k", 0) or 0)
     rule = str(jail_runtime_cfg.get("api_rule", "poe") or "poe")
-    if rule not in ("poe", "mix"):
+    if rule not in ("poe", "poe_union", "mix"):
         raise RuntimeError(
             f"partial_tilt_output.rule={rule!r} is not available on engine='hf_partial' "
-            f"(poe | mix). 'spec' is a call-cost optimisation with no local analogue, and "
+            f"(poe | poe_union | mix). 'spec' is a call-cost optimisation with no local "
+            f"analogue, and "
             f"'corner' is a hosted-API construct.")
     # partial_tilt_output.floor is a PERCENT (the hosted engine's unit); the local mask needs
     # a probability. Converting here rather than at the config keeps one unit in the config.
@@ -207,7 +231,8 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
         done = torch.zeros(B, dtype=torch.bool, device=device)
 
         for _ in range(int(max_tokens)):
-            keep = _support_mask(tl, cl, top_k, rule)
+            t_keep, c_keep = _side_masks(tl, cl, top_k)
+            keep = (t_keep & c_keep) if rule == "poe" else (t_keep | c_keep)
             if floor > 0.0:
                 keep = keep & (torch.softmax(tl, dim=-1) >= floor)
             empty = ~keep.any(dim=-1)
@@ -225,13 +250,13 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
                 onehot[torch.arange(B, device=device), t_am] = True
                 keep = torch.where(empty.unsqueeze(-1), onehot, keep)
 
-            probs = _combine(tl, cl, b1, b2, rule, keep, temperature)
+            probs = _combine(tl, cl, b1, b2, rule, keep, temperature, t_keep, c_keep)
 
             if measure:
                 # What the SAME rule would have done with no truncation, from the same forward
                 # pass: the cost of top-k, isolated from sampling noise by comparing argmaxes.
-                full = _combine(tl, cl, b1, b2, rule,
-                                torch.ones_like(keep), temperature)
+                _all = torch.ones_like(keep)
+                full = _combine(tl, cl, b1, b2, rule, _all, temperature, _all, _all)
                 live = ~done
                 n_live = int(live.sum())
                 if n_live:
