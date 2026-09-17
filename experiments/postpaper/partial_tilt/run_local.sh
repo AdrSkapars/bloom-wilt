@@ -91,6 +91,11 @@ if [ "${ADAPTIVE:-0}" = "1" ]; then
   ASUF="_a${ALPHA0:-0.4}k${ALPHA_K:-10}"
   [ "${Q_METRIC:-elicited_outside}" = "elicited_outside" ] || ASUF="${ASUF}_q${Q_METRIC}"
 else
+  # MUST be explicit. cfg has mix.adaptive=True and mix.alpha0=0.6, so merely NOT exporting
+  # these leaves the schedule ON at a different alpha0 -- and the folder name, built from
+  # ASUF, would still say "fixed". Three runs were silently adaptive at alpha0=0.6 before this
+  # line existed. An off switch that works by omission is not an off switch.
+  export BLOOM_API_ADAPTIVE=0
   ASUF=""
 fi
 export BLOOM_API_JAIL_VAR_BATCH="${VAR_BATCH:-15}"
