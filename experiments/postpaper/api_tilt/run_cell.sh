@@ -126,7 +126,10 @@ case "$ARM" in
     if [ "$AD" = "1" ]; then
       A0="${BLOOM_API_ALPHA0:-0.6}"; AK="${BLOOM_API_ALPHA_K:-10}"
       export BLOOM_API_ADAPTIVE=1 BLOOM_API_ALPHA0=$A0 BLOOM_API_ALPHA_K=$AK
+      AM="${BLOOM_API_ALPHA_MIN:-0}"
+      export BLOOM_API_ALPHA_MIN=$AM
       ADSUF="_a${A0}k${AK}"
+      [ "$AM" = "0" ] || ADSUF="${ADSUF}m${AM}"
     else ADSUF=""; fi
     ST="${BLOOM_API_SAMPLE_TEMP:-0.05}"
     export BLOOM_API_SAMPLE_TEMP=$ST

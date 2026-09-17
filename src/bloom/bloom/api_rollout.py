@@ -134,6 +134,7 @@ def run_rollout_api(
         "api_adaptive": bool(_mixk("adaptive", True)),
         "api_alpha0": float(_mixk("alpha0", 0.6)),
         "api_alpha_k": float(_mixk("alpha_k", 10.0) or 10.0),
+        "api_alpha_min": float(_mixk("alpha_min", 0.0) or 0.0),
         # rule="spec" only. api_spec_theta was formerly api_stage2_theta, which meant the mix
         # stage-2 trigger under one rule and this accept threshold under the other.
         "api_spec_block": int(_speck("block", 10) or 10),

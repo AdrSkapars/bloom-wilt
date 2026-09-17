@@ -728,6 +728,7 @@ def _driven_mix(handle: Dict, jail_runtime_cfg: Dict,
     adaptive = bool(jail_runtime_cfg.get("api_adaptive", True))
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.6))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
+    alpha_min = float(jail_runtime_cfg.get("api_alpha_min", 0.0) or 0.0)
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
     if adaptive and alpha_k <= 0.0:
@@ -853,7 +854,14 @@ def _driven_mix(handle: Dict, jail_runtime_cfg: Dict,
                     # ties among candidates the elicited context never proposed -- without
                     # it, at q=1 every target-only candidate scores 0 and the pick is
                     # arbitrary rather than the target's top-1.
-                    _alpha = max(alpha0 * (1.0 - _q ** alpha_k), 1e-9)
+                    # alpha_min is the TARGET weight retained at full disagreement. The
+                    # 1e-9 clamp below it means a q=1 position is decided by the elicited
+                    # context alone -- and with a switch-type metric (top1_mismatch) that is
+                    # most of what the reply is made of, which is why raising alpha0 does
+                    # nothing: alpha0 only weights the positions where the two contexts
+                    # AGREE, and there the weight cannot change the pick. alpha_min is the
+                    # same beta-strength lever aimed at the positions that decide the output.
+                    _alpha = max(alpha0 * (1.0 - _q ** alpha_k), alpha_min, 1e-9)
                     alpha_sum += _alpha
                     _mix = [(t, _alpha * xy[0] + (1.0 - _alpha) * xy[1])
                             for t, xy in _union.items()]
