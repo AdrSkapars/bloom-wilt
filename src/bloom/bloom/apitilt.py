@@ -690,9 +690,11 @@ def _driven_mix(handle: Dict, jail_runtime_cfg: Dict,
     #                       there spends plausibility for nothing) and near 1 where it wants
     #                       something the target would never pick.
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
-    if q_metric not in ("elicited_outside", "tv", "margin"):
+    if q_metric not in ("elicited_outside", "tv", "margin", "top1_mismatch",
+                        "target_top_gap"):
         raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
-                           f"(elicited_outside | tv | margin)")
+                           f"(elicited_outside | tv | margin | top1_mismatch | "
+                           f"target_top_gap)")
     # The last two stochastic paths in the decode: an unresolvable surface form, and the
     # revert when nothing the elicited side offers clears the floor. Both otherwise take a
     # DRAW from the target (the latter min_p-constrained). With det_fallback they take the
@@ -810,6 +812,24 @@ def _driven_mix(handle: Dict, jail_runtime_cfg: Dict,
                     _pe = {_s: math.exp(lp) / _te for _s, lp in jr["top"]}
                     _q = 0.5 * sum(abs(_pt.get(_s, 0.0) - _pe.get(_s, 0.0))
                                    for _s in set(_pt) | set(_pe))
+                elif q_metric == "top1_mismatch":
+                    # 1 when the two contexts disagree about the single most likely token,
+                    # else 0. A HARD SWITCH under the adaptive schedule -- 1**k = 1 for any k,
+                    # so alpha goes to 0 (full elicited control) on a mismatch and stays at
+                    # alpha0 otherwise, with kappa inert. The cheapest metric this engine can
+                    # compute: it needs only the top-1 from each side, not the whole top-k.
+                    _q = 0.0 if (tr["top"] and jr["top"]
+                                 and tr["top"][0][0] == jr["top"][0][0]) else 1.0
+                elif q_metric == "target_top_gap":
+                    # The TARGET's own top-1, scored under both distributions: how much
+                    # probability the elicited context withholds from the token the target
+                    # most wants. Graded, so kappa is live; capped by the target's own
+                    # confidence, so it never fully hands over where the target is unsure.
+                    _tt = sum(math.exp(lp) for _, lp in tr["top"]) or 1.0
+                    _pt = {_s: math.exp(lp) / _tt for _s, lp in tr["top"]}
+                    _pe = {_s: math.exp(lp) / _te for _s, lp in jr["top"]}
+                    _ttop = tr["top"][0][0] if tr["top"] else None
+                    _q = max(0.0, (_pt.get(_ttop, 0.0) - _pe.get(_ttop, 0.0))) if _ttop else 0.0
                 else:   # margin
                     # What the ELICITED context gains by getting its way at this position.
                     _pe = {_s: math.exp(lp) / _te for _s, lp in jr["top"]}
