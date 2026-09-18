@@ -217,14 +217,21 @@ def _mean_lp(model, tok, ctx, resp, device="cuda:0"):
     cids = tok.encode(ctx, add_special_tokens=False)
     rids = tok.encode(resp, add_special_tokens=False)
     if not rids:
-        return None, 0
+        return None, 0, []
     ids = torch.tensor([cids + rids], device=device)
     with torch.no_grad():
         logits = model(input_ids=ids).logits[0].float()
     lp = torch.log_softmax(logits[:-1], dim=-1)
     sel = lp[len(cids) - 1: len(cids) - 1 + len(rids)]
     tgt = torch.tensor(rids, device=device)
-    return float(sel.gather(-1, tgt[:, None]).squeeze(-1).mean()), len(rids)
+    per = sel.gather(-1, tgt[:, None]).squeeze(-1)
+    # The per-token list is returned, not just its mean. A mean over the whole reply is
+    # dominated by function words where both contexts agree and both are confident, so it
+    # dilutes the behaviour signal into noise -- the same reason a mean over positions could
+    # not separate any two arms in the steering sweeps while a per-position switch could.
+    # Keeping the list also makes the position-resolved and min-based views possible without
+    # a second scoring pass.
+    return float(per.mean()), len(rids), [float(x) for x in per]
 
 
 def cmd_score(a):
@@ -237,12 +244,15 @@ def cmd_score(a):
     out = []
     for i, r in enumerate(rows):
         t_ctx, e_ctx = _ctx_strings(tok, a.beh, scens[r["scen"]], think)
-        lt, n = _mean_lp(model, tok, t_ctx, r["text"])
-        le, _ = _mean_lp(model, tok, e_ctx, r["text"])
+        lt, n, pt = _mean_lp(model, tok, t_ctx, r["text"])
+        le, _, pe = _mean_lp(model, tok, e_ctx, r["text"])
         out.append({"id": r["id"], "score_model": a.model,
                     "lp_target": lt, "lp_elicited": le,
                     "delta": (le - lt) if (lt is not None and le is not None) else None,
-                    "n_tok": n})
+                    "n_tok": n,
+                    # per-token, same order and length for both contexts (the response
+                    # tokenisation is identical -- only the conditioning context differs)
+                    "tok_target": pt, "tok_elicited": pe})
         if (i + 1) % 50 == 0:
             print("  scored %d/%d" % (i + 1, len(rows)))
     _write("score_%s_%s.jsonl" % (a.beh, a.model), out)
