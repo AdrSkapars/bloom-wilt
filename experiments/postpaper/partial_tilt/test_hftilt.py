@@ -399,6 +399,30 @@ def test_topm_tv_is_the_smooth_form_of_topm_disjoint():
           "disjoint %d rows, tv==1 %d rows" % (int((d > 0.5).sum()), int((t > 1 - 1e-5).sum())))
 
 
+def test_the_family_collapses_at_both_ends_of_m():
+    """m=1 IS top1_mismatch, and m=V IS the full-vocab tv. The family spans the two.
+
+    At m=1 each window renormalises to a point mass on its own argmax, so TV is 0 when the
+    argmaxes agree and 1 when they do not -- the binary metric exactly. At m=V the window is
+    the whole distribution, so it is the plain tv metric. Everything between is the same
+    quantity measured through a narrower or wider window, and m=5 is what a hosted top-5
+    logprob API can see. This is what makes it one family rather than a pile of metrics.
+    """
+    tl = torch.randn(128, V)
+    cl = torch.randn(128, V)
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    check("top1_tv == top1_mismatch",
+          torch.allclose(_q_of(tl, cl, keep, keep, "top1_tv"),
+                         _q_of(tl, cl, keep, keep, "top1_mismatch"), atol=1e-6))
+    check("top%d_tv == full-vocab tv" % V,
+          torch.allclose(_q_of(tl, cl, keep, keep, "top%d_tv" % V),
+                         _q_of(tl, cl, keep, keep, "tv"), atol=1e-5))
+    # and q_ref cannot do anything to a binary metric: {0,1} survives divide-and-cap
+    qb = _q_of(tl, cl, keep, keep, "top1_mismatch")
+    check("q_ref is inert for a binary metric",
+          torch.allclose(_alpha_of(qb, 0.222, 1.0, 1.0), _alpha_of(qb, 0.222, 1.0, 0.3), atol=0))
+
+
 def test_topm_tv_is_actually_graded():
     """The discriminating test: a smooth metric must take values strictly inside (0, 1).
 
@@ -566,6 +590,7 @@ for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_supp
            test_disjointness_is_rarer_as_m_grows,
            test_top5_disjoint_differs_from_top1_mismatch,
            test_topm_tv_is_the_smooth_form_of_topm_disjoint,
+           test_the_family_collapses_at_both_ends_of_m,
            test_topm_tv_is_actually_graded,
            test_topm_tv_is_not_the_full_vocab_tv,
            test_topm_metrics_agree_on_the_two_extremes,
