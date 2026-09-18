@@ -83,6 +83,13 @@ def cmd_score(a):
             continue
         msgs = t["messages"]
         acc = {"t": [], "e": [], "d": [], "a": [], "da": []}
+        # ...and the same quantities restricted to the OPENING of each turn. The context gap
+        # was measured earlier to live almost entirely in the first decile of a reply: both
+        # contexts share the generated prefix, so once the turn has committed they agree on
+        # how to continue. Pooling every token of every turn therefore dilutes a short strong
+        # signal with a long flat tail. Collected here so the restriction costs no extra pass.
+        head = {"t": [], "e": [], "d": [], "a": [], "da": []}
+        HEAD = 8
         # Every assistant turn is scored against its own preceding conversation, which is what
         # the decode conditions on. The behaviour score is per TRANSCRIPT, so the per-token
         # values are pooled across its turns rather than kept per turn.
@@ -109,6 +116,9 @@ def cmd_score(a):
             acc["a"] += _gather_lp(wa, tgt)
             acc["d"] += _gather_lp(we - wt, tgt)      # the pure-difference distribution
             acc["da"] += _gather_lp(we - wa, tgt)
+            for k, w in (("t", wt), ("e", we), ("a", wa),
+                         ("d", we - wt), ("da", we - wa)):
+                head[k] += _gather_lp(w, tgt)[:HEAD]
             del wt, we, wa
         if not acc["t"]:
             continue
@@ -117,7 +127,10 @@ def cmd_score(a):
                     "lp_target": st.mean(acc["t"]), "lp_elicited": st.mean(acc["e"]),
                     "lp_anti": st.mean(acc["a"]),
                     "delta": st.mean(acc["e"]) - st.mean(acc["t"]),
-                    "diff": st.mean(acc["d"]), "diff_anti": st.mean(acc["da"])})
+                    "diff": st.mean(acc["d"]), "diff_anti": st.mean(acc["da"]),
+                    "h_lp_target": st.mean(head["t"]), "h_lp_elicited": st.mean(head["e"]),
+                    "h_delta": st.mean(head["e"]) - st.mean(head["t"]),
+                    "h_diff": st.mean(head["d"]), "h_diff_anti": st.mean(head["da"])})
         if (i + 1) % 20 == 0:
             print("  scored %d/%d" % (i + 1, len(files)))
     os.makedirs(OUT, exist_ok=True)
@@ -159,7 +172,11 @@ def cmd_report(a):
                          ("lp_anti", "anti ctx alone"),
                          ("delta", "delta = elic - targ"),
                          ("diff", "PURE DIFF (e - t)"),
-                         ("diff_anti", "PURE DIFF (e - a)")):
+                         ("diff_anti", "PURE DIFF (e - a)"),
+                         ("h_lp_target", "[head8] target alone"),
+                         ("h_lp_elicited", "[head8] elicited alone"),
+                         ("h_delta", "[head8] delta"),
+                         ("h_diff", "[head8] PURE DIFF")):
             auc = _auc([r[key] for r in hi], [r[key] for r in lo])
             bar = "#" * int(round(abs(auc - 0.5) * 40))
             print("  %-22s AUC=%.3f  %s" % (lab, auc, bar))
