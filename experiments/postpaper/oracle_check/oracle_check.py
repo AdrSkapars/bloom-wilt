@@ -280,6 +280,17 @@ def cmd_score(a):
         for neg_name, wneg in (("t", wt), ("a", wa)):
             for b in BETAS:
                 rec["tok_cfg%s_b%g" % (neg_name, b)] = _gather_lp(we + b * (we - wneg), tgt)
+        # The beta -> infinity DIRECTION, taken at temperature 1: a distribution built purely
+        # from the disagreement between the two contexts. Everything both contexts agree on --
+        # every function word, every forced continuation -- cancels exactly, so only tokens the
+        # two contexts rank differently carry any mass. Distinct from large beta, which points
+        # the same way but also drives the temperature to zero; this isolates the direction.
+        #
+        # Well defined despite logits being arbitrary up to a per-position constant:
+        # log P_e - log P_t differs from l_e - l_t by a constant, which softmax removes, so
+        # "difference of logits" and "difference of log-probs" give the same distribution.
+        rec["tok_diff"] = _gather_lp(we - wt, tgt)
+        rec["tok_diffa"] = _gather_lp(we - wa, tgt)
         rec["lp_target"] = sum(rec["tok_target"]) / rec["n_tok"]
         rec["lp_elicited"] = sum(rec["tok_elicited"]) / rec["n_tok"]
         rec["delta"] = rec["lp_elicited"] - rec["lp_target"]
