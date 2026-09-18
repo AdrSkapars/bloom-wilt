@@ -304,9 +304,18 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
     _METRICS = ("elicited_outside", "tv", "margin", "jsd", "hellinger", "top1_mismatch",
                 "target_top_gap")
-    if q_metric not in _METRICS:
+    # topM_disjoint is a FAMILY, not a name -- top1_disjoint, top2_disjoint, ... -- so
+    # membership has to be parsed. m must be a positive integer: "topfive_disjoint" would
+    # otherwise slip through to the decode and die per-position instead of here, at startup.
+    _m_ok = False
+    if q_metric.startswith("top") and q_metric.endswith("_disjoint"):
+        _m = q_metric[3:-9]
+        _m_ok = _m.isdigit() and int(_m) >= 1
+    if q_metric not in _METRICS and not _m_ok:
+        # The old message named three of the seven metrics it accepted, which is worse than
+        # useless when the entire job of the error is to say what you may write instead.
         raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
-                           f"(elicited_outside | tv | margin)")
+                           f"({' | '.join(_METRICS)} | topM_disjoint)")
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
     measure = bool(jail_runtime_cfg.get("hf_measure_oracle", True))

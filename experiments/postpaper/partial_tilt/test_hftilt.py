@@ -310,6 +310,27 @@ def test_decode_loop_with_a_stub_model():
                                      6, 1.0, False)
     check("k=0 decode produces tokens", all(len(o["best_ids"]) >= 1 for o in out0))
 
+    # The q metric is validated in TWO places -- _q_of, and a whitelist at the top of
+    # _driven_hf_partial -- and adding topM_disjoint to only the first let four racial jobs
+    # launch and die 7.6s in. A metric the maths accepts must also survive startup.
+    for name in ("top1_disjoint", "top5_disjoint"):
+        cfgq = dict(cfg, api_top_k=0, api_adaptive=True, api_alpha0=0.222, api_alpha_k=2.0,
+                    api_q_metric=name)
+        try:
+            outq = hftilt._driven_hf_partial(hf, cfgq, [[{"role": "user", "content": "hi"}]] * 2,
+                                             6, 1.0, False)
+            check("%s survives startup validation" % name, all("best_ids" in o for o in outq))
+        except RuntimeError as e:
+            check("%s survives startup validation" % name, False, str(e))
+
+    cfgbad = dict(cfg, api_top_k=0, api_adaptive=True, api_q_metric="topfive_disjoint")
+    try:
+        hftilt._driven_hf_partial(hf, cfgbad, [[{"role": "user", "content": "hi"}]] * 2,
+                                  6, 1.0, False)
+        check("malformed topM name is rejected at startup", False, "no exception")
+    except RuntimeError:
+        check("malformed topM name is rejected at startup", True)
+
 
 
 
