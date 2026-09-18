@@ -1,3 +1,0 @@
-{"t": 1789646525.0446827, "tag": "batch", "rule": "poe", "top_k": 1, "b1": 1.0, "b2": 1.5, "positions": 1232, "mean_support": 1.0, "empty_rate": 0.344156, "argmax_agree": 0.801948, "mean_mass_kept": 0.763}
-{"t": 1789646629.7586112, "tag": "batch", "rule": "poe", "top_k": 1, "b1": 1.0, "b2": 1.5, "positions": 1358, "mean_support": 1.0, "empty_rate": 0.330633, "argmax_agree": 0.807069, "mean_mass_kept": 0.750438}
-{"t": 1789646714.6216483, "tag": "batch", "rule": "poe", "top_k": 1, "b1": 1.0, "b2": 1.5, "positions": 1405, "mean_support": 1.0, "empty_rate": 0.262633, "argmax_agree": 0.837011, "mean_mass_kept": 0.784848}

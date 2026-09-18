@@ -1,3 +1,0 @@
-{"t": 1789649986.9344046, "tag": "batch", "rule": "mix", "top_k": 500, "b1": 1.0, "b2": 1.5, "positions": 1032, "mean_support": 651.3014, "support_excludes_empty": true, "empty_rate": 0.0, "argmax_agree": 0.999031, "mean_mass_kept": 0.99589}
-{"t": 1789650025.0568364, "tag": "batch", "rule": "mix", "top_k": 500, "b1": 1.0, "b2": 1.5, "positions": 1129, "mean_support": 611.9415, "support_excludes_empty": true, "empty_rate": 0.0, "argmax_agree": 1.0, "mean_mass_kept": 0.995844}
-{"t": 1789650104.74627, "tag": "batch", "rule": "mix", "top_k": 500, "b1": 1.0, "b2": 1.5, "positions": 1347, "mean_support": 606.2502, "support_excludes_empty": true, "empty_rate": 0.0, "argmax_agree": 1.0, "mean_mass_kept": 0.997762}

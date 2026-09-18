@@ -1,1 +1,0 @@
-{"t": 1789647248.5533497, "tag": "batch", "rule": "poe", "top_k": 49664, "b1": 1.0, "b2": 1.5, "positions": 1192, "mean_support": 35484.3238, "support_excludes_empty": true, "empty_rate": 0.0, "argmax_agree": 1.0, "mean_mass_kept": 1.0}

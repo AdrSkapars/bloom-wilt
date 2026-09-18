@@ -1,1 +1,0 @@
-{"t": 1789655824.0645123, "tag": "batch", "rule": "poe_union", "top_k": 50000, "b1": 1.0, "b2": 1.5, "positions": 1129, "mean_support": 64655.5793, "support_excludes_empty": true, "empty_rate": 0.0, "argmax_agree": 1.0, "mean_mass_kept": 1.0, "adaptive": true, "alpha0": 0.4, "alpha_k": 3.0, "q_metric": "elicited_outside", "mean_q": 7.5e-05, "mean_alpha": 0.4, "gain": 2.5}

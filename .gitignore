@@ -56,3 +56,9 @@ paper/*
 # API keys and the downloaded kickoff banks — local only
 .env.local
 experiments/bloom/_banks/
+
+# Run outputs stay on the machine that produced them. They were tracked until
+# 2026-09-18: ~9700 files of transcripts and judgments, which made every results
+# commit enormous, triggered CRLF rewrite warnings on hundreds of JSON files, and
+# made the server checkout collide with its own untracked copies on every pull.
+experiments/postpaper/runs_*/
