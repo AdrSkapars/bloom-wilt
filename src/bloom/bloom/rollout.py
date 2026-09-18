@@ -1093,6 +1093,7 @@ def run_rollout_batched_local(
                 "api_alpha0": float(_pmix.get("alpha0", 0.4)),
                 "api_alpha_k": float(_pmix.get("alpha_k", 10.0) or 10.0),
                 "api_q_metric": str(_pmix.get("q_metric", "elicited_outside") or "elicited_outside"),
+                "api_q_ref": float(_pmix.get("q_ref", 1.0) if _pmix.get("q_ref") is not None else 1.0),
             })
             print(f"  [partial_tilt_output] engine=hf_partial rule={jail_runtime_cfg['api_rule']} "
                   f"top_k={jail_runtime_cfg['api_top_k'] or 'full'} "

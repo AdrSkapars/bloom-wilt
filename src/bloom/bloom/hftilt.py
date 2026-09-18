@@ -230,6 +230,27 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
     return q.clamp(0.0, 1.0)
 
 
+def _alpha_of(q, alpha0: float, alpha_k: float, q_ref: float = 1.0):
+    """Target weight per position: alpha = alpha0 * (1 - min(1, q/q_ref)**alpha_k).
+
+    q_ref exists because the unscaled form is bounded below by alpha0*(1 - max q). A metric
+    whose q never approaches 1 therefore never approaches alpha=0, so it nudges every position
+    a little and hands over none of them. Measured on racial: top5_tv averages q ~ 0.20 and the
+    whole alpha_k range 1..10 moved mean alpha only between 0.184 and 0.219, against alpha0 =
+    0.222. The binary metrics beat it for exactly this reason -- their q is 1 where they fire,
+    so alpha reaches 0 and the elicited context takes the position outright.
+
+    Capping q/q_ref at 1 gives a graded metric that same reach: at or above q_ref it is full
+    handover, below it stays proportional. q_ref = 1.0 is the identity, so the default path is
+    bit-identical to before this existed.
+
+    The result is clamped off exactly 0 so the target's own ordering still breaks ties among
+    candidates the elicited side never proposed.
+    """
+    qe = (q / q_ref).clamp(max=1.0) if q_ref != 1.0 else q
+    return (alpha0 * (1.0 - qe ** alpha_k)).clamp_min(1e-9)
+
+
 def _combine(tl, cl, b1, b2, rule: str, keep, temperature: float,
              t_keep=None, c_keep=None):
     """Scores over the surviving support, as a probability distribution per row.
@@ -327,6 +348,11 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     alpha0 = float(jail_runtime_cfg.get("api_alpha0", 0.4))
     alpha_k = float(jail_runtime_cfg.get("api_alpha_k", 10.0) or 10.0)
     q_metric = str(jail_runtime_cfg.get("api_q_metric", "elicited_outside") or "elicited_outside")
+    # NOT `or 1.0`: that idiom maps a deliberate 0.0 to the identity, so a q_ref the user
+    # meant as "hand over everywhere" would silently become "never rescale". Absent is 1.0;
+    # zero is an error and says so.
+    _qr = jail_runtime_cfg.get("api_q_ref", 1.0)
+    q_ref = 1.0 if _qr is None else float(_qr)
     _METRICS = ("elicited_outside", "tv", "margin", "jsd", "hellinger", "top1_mismatch",
                 "target_top_gap")
     # topM_disjoint is a FAMILY, not a name -- top1_disjoint, top2_disjoint, ... -- so
@@ -340,6 +366,8 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
                            f"({' | '.join(_METRICS)} | topM_disjoint|tv|outside)")
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
+    if not (0.0 < q_ref <= 1.0):
+        raise RuntimeError(f"partial_tilt_output.mix.q_ref={q_ref!r} must be in (0, 1]")
     measure = bool(jail_runtime_cfg.get("hf_measure_oracle", True))
     greedy = bool(jail_runtime_cfg.get("hf_greedy", False))
 
@@ -404,9 +432,18 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
 
             if adaptive:
                 q = _q_of(tl, cl, t_keep, c_keep, q_metric)
-                # clamped off exactly 0 so the target's own ordering still breaks ties among
-                # candidates the elicited side never proposed
-                a = (alpha0 * (1.0 - q ** alpha_k)).clamp_min(1e-9)
+                # RESCALE q before the exponent sees it. alpha = alpha0*(1 - q**kappa) is
+                # bounded below by alpha0*(1 - max q), so a metric whose q never approaches 1
+                # can never approach alpha=0 -- it nudges everywhere and hands over control
+                # nowhere. Measured on racial: top5_tv averages q~0.20, and the whole kappa
+                # range 1..10 moved mean alpha only between 0.184 and 0.219 against an alpha0
+                # of 0.222. That is why the binary metrics win: q hits 1 EXACTLY where they
+                # fire, alpha goes to 0, and the elicited context takes the position outright.
+                #
+                # Dividing by q_ref and capping at 1 gives a smooth metric the same reach:
+                # q >= q_ref is full handover, below it stays graded. q_ref=1.0 is the
+                # identity, so every existing run and the whole default path are unchanged.
+                a = _alpha_of(q, alpha0, alpha_k, q_ref)
                 # GAIN. (alpha, 1-alpha) fixes the RATIO but also fixes the SUM at 1, and the
                 # sum is an inverse temperature: softmax(2.5*z) is sharper than softmax(z).
                 # Only an argmax is scale-free, and this decode samples. Rescaling by b1+b2
@@ -486,6 +523,7 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
             "alpha0": alpha0 if adaptive else None,
             "alpha_k": alpha_k if adaptive else None,
             "q_metric": q_metric if adaptive else None,
+            "q_ref": q_ref if adaptive else None,
             # Both are sums over LIVE rows divided by live positions, so they are the mean q
             # and mean alpha actually applied -- the thing to look at when a schedule does
             # nothing because q never got near 1.
@@ -494,7 +532,8 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
             "gain": gain if adaptive else None,
         })
         if adaptive:
-            print(f"  [hf_partial] adaptive a0={alpha0} k={alpha_k} metric={q_metric} "
+            print(f"  [hf_partial] adaptive a0={alpha0} k={alpha_k} metric={q_metric}"
+                  + (f" q_ref={q_ref}" if q_ref != 1.0 else "") + " "
                   f"mean_q={sum_q / n_pos:.4f} mean_alpha={sum_alpha / n_pos:.4f}", flush=True)
         print(f"  [hf_partial] rule={rule} k={top_k or 'full'} "
               f"support={sum_support / n_pos:.2f} empty={100.0 * n_empty / n_pos:.2f}% "

@@ -19,7 +19,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "src"))
 
-from bloom.bloom.hftilt import _combine, _q_of, _support_mask  # noqa: E402
+from bloom.bloom.hftilt import _alpha_of, _combine, _q_of, _support_mask  # noqa: E402
 
 B, V = 3, 50
 torch.manual_seed(0)
@@ -461,6 +461,93 @@ def test_padding_cannot_manufacture_an_overlap():
     check("one survivor each, same token -> not disjoint", q2[0] == 0.0, "got %r" % (q2[0],))
 
 
+def test_q_ref_identity_leaves_alpha_untouched():
+    """q_ref=1.0 must be EXACTLY the old formula -- every prior run depends on it."""
+    q = torch.rand(64)
+    for a0, kk in ((0.222, 2.0), (0.6, 10.0), (0.4, 1.0)):
+        want = (a0 * (1.0 - q ** kk)).clamp_min(1e-9)
+        got = _alpha_of(q, a0, kk, 1.0)
+        check("q_ref=1 identity at a0=%s k=%s" % (a0, kk), torch.allclose(want, got, atol=0))
+
+
+def test_q_ref_restores_full_handover():
+    """The whole point: a graded q that never nears 1 must still be able to reach alpha ~ 0.
+
+    Without q_ref, q=0.2 under alpha0=0.222 leaves alpha at 0.178 -- a 20% nudge. With
+    q_ref=0.2 the same position hands the token over outright.
+    """
+    q = torch.tensor([0.2])
+    unscaled = float(_alpha_of(q, 0.222, 1.0, 1.0))
+    scaled = float(_alpha_of(q, 0.222, 1.0, 0.2))
+    check("unscaled q=0.2 barely moves alpha", unscaled > 0.15, "got %.4f" % unscaled)
+    check("q_ref=0.2 sends the same q to full handover", scaled < 1e-6, "got %.6f" % scaled)
+
+
+def test_q_ref_stays_graded_below_the_reference():
+    """Above q_ref: saturated. Below: proportional, and still monotone decreasing in q."""
+    qs = torch.tensor([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.8])
+    a = _alpha_of(qs, 0.222, 1.0, 0.4)
+    check("alpha is non-increasing in q", bool((a[1:] <= a[:-1] + 1e-9).all()), "%r" % a)
+    check("alpha=alpha0 at q=0", abs(float(a[0]) - 0.222) < 1e-6, "got %r" % float(a[0]))
+    check("alpha saturates at q=q_ref", float(a[4]) < 1e-6, "got %r" % float(a[4]))
+    check("alpha stays saturated above q_ref", float(a[6]) < 1e-6, "got %r" % float(a[6]))
+    interior = [float(x) for x in a[1:4]]
+    check("alpha is graded strictly between", all(1e-6 < v < 0.222 for v in interior),
+          "%r" % interior)
+
+
+def test_q_ref_is_validated():
+    """0 would divide by zero; >1 would weaken a graded metric instead of strengthening it."""
+    from bloom.bloom import hftilt
+    VOC, EOS = 12, 11
+
+    class _O:
+        def __init__(s_, l):
+            s_.logits, s_.past_key_values = l, None
+
+    class _S:
+        def __call__(s_, input_ids=None, attention_mask=None, use_cache=True,
+                     past_key_values=None, logits_to_keep=None):
+            lg = torch.full((input_ids.shape[0], 1, VOC), -8.0)
+            lg[:, 0, 3] = 6.0
+            lg[:, 0, 5] = 2.0
+            return _O(lg)
+
+    class _T:
+        def apply_chat_template(s_, m, tokenize=False, add_generation_prompt=True):
+            return "X"
+
+        def encode(s_, x, add_special_tokens=False):
+            return [1, 2]
+
+        def decode(s_, x, skip_special_tokens=True):
+            return "y"
+
+    hf = {"mt": _S(), "mc": _S(), "tok": _T(), "tok_c": _T(),
+          "device": torch.device("cpu"), "pad_id": 0, "eos_id": EOS,
+          "target_no_think": "", "corrupt_no_think": ""}
+    base = {"system_prompt": "s", "prefill": "", "b1": 1.0, "b2": 1.0,
+            "api_rule": "poe", "api_top_k": 0, "api_floor": 0.0,
+            "hf_empty_action": "target_argmax", "hf_measure_oracle": True, "hf_greedy": True,
+            "api_adaptive": True, "api_alpha0": 0.222, "api_alpha_k": 1.0,
+            "api_q_metric": "top5_tv"}
+    os.environ.pop("BLOOM_FOLDER", None)
+    for bad in (0.0, 1.5):
+        try:
+            hftilt._driven_hf_partial(hf, dict(base, api_q_ref=bad),
+                                      [[{"role": "user", "content": "hi"}]], 3, 1.0, False)
+            check("q_ref=%r rejected at startup" % bad, False, "no exception")
+        except RuntimeError:
+            check("q_ref=%r rejected at startup" % bad, True)
+        except Exception as e:
+            check("q_ref=%r rejected at startup" % bad, False,
+                  "wrong error: %s: %s" % (type(e).__name__, e))
+    # and a legal one must still run end to end
+    out = hftilt._driven_hf_partial(hf, dict(base, api_q_ref=0.25),
+                                    [[{"role": "user", "content": "hi"}]], 3, 1.0, False)
+    check("q_ref=0.25 decodes", len(out) == 1 and "best_ids" in out[0])
+
+
 def test_unknown_metric_raises():
     """A typo must not quietly become elicited_outside, which is identically 0 at k=0."""
     keep = torch.ones_like(TL, dtype=torch.bool)
@@ -483,6 +570,10 @@ for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_supp
            test_topm_tv_is_not_the_full_vocab_tv,
            test_topm_metrics_agree_on_the_two_extremes,
            test_padding_cannot_manufacture_an_overlap,
+           test_q_ref_identity_leaves_alpha_untouched,
+           test_q_ref_restores_full_handover,
+           test_q_ref_stays_graded_below_the_reference,
+           test_q_ref_is_validated,
            test_unknown_metric_raises,
            test_decode_loop_with_a_stub_model):
     print(fn.__name__)

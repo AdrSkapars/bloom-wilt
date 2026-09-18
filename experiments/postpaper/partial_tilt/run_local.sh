@@ -101,8 +101,14 @@ if [ "${ADAPTIVE:-0}" = "1" ]; then
   export BLOOM_API_ALPHA0="${ALPHA0:-0.4}"
   export BLOOM_API_ALPHA_K="${ALPHA_K:-10}"
   export BLOOM_API_Q_METRIC="${Q_METRIC:-elicited_outside}"
+  # QREF rescales q before the ALPHA_K exponent: q >= QREF is full handover to the elicited
+  # context, below it stays graded. 1.0 is the identity. It exists because alpha is bounded
+  # below by ALPHA0*(1 - max q), so a graded metric whose q sits near 0.2 cannot reach alpha=0
+  # no matter what ALPHA_K does -- which is why the binary metrics beat it.
+  export BLOOM_API_Q_REF="${QREF:-1.0}"
   ASUF="_a${ALPHA0:-0.4}k${ALPHA_K:-10}"
   [ "${Q_METRIC:-elicited_outside}" = "elicited_outside" ] || ASUF="${ASUF}_q${Q_METRIC}"
+  [ "${QREF:-1.0}" = "1.0" ] || ASUF="${ASUF}_r${QREF}"
 else
   # MUST be explicit. cfg has mix.adaptive=True and mix.alpha0=0.6, so merely NOT exporting
   # these leaves the schedule ON at a different alpha0 -- and the folder name, built from
