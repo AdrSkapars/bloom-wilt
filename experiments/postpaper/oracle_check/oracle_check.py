@@ -73,7 +73,7 @@ ANTI = {
 }
 # beta for the guided distribution l_e + beta*(l_e - l_neg), renormalised over the vocab.
 # beta=0 is exactly the plain elicited context, which makes it the sweep's anchor.
-BETAS = [0.0, 0.5, 1.0, 2.0, 4.0]
+BETAS = [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0]
 JUDGE = "openrouter/google/gemma-4-26b-a4b-it"
 N_SAMPLES = 2       # per (scenario, context): enough to spread the scores, and cheap
 MAX_NEW = 200       # every behaviour prompt asks for 2-5 sentences
