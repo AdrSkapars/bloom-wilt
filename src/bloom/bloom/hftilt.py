@@ -152,6 +152,29 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
         # hellinger, the fine structure of the disagreement is not what matters and the
         # continuous metrics are buying nothing.
         q = (pt.argmax(-1) != pe.argmax(-1)).float()
+    elif metric.startswith("top") and metric.endswith("_disjoint"):
+        # "are the two sides' top-m sets disjoint": 1 when they share no candidate at all,
+        # 0 otherwise. A STRICT REFINEMENT of top1_mismatch rather than a separate idea --
+        # top1_disjoint IS top1_mismatch, and raising m makes the switch fire strictly less
+        # often, because disjoint top-m sets imply disjoint top-1s but not the reverse. So m
+        # is a dial on HOW OFTEN the elicited side gets its boost, which is a different axis
+        # from alpha0/alpha_min/kappa -- those set HOW HARD it is boosted at the positions
+        # that fire and leave the firing rate untouched.
+        #
+        # It is also the hosted algorithm's failure case turned into a signal: with only the
+        # top-5 logprobs an empty overlap left the product with no support and forced a
+        # fallback (1-6% of positions on DeepSeek). Here the full logits are always there, so
+        # nothing degenerates -- the same condition is simply evidence that the two contexts
+        # want unrelated things.
+        m = int(metric[3:-9])
+        tv, ti = pt.topk(m, dim=-1)
+        ev, ei = pe.topk(m, dim=-1)
+        # Only count a shared index if BOTH sides actually put mass on it. Under truncation a
+        # row can have fewer than m survivors and topk pads with zero-probability entries,
+        # whose indices would otherwise manufacture an overlap out of padding.
+        both = (tv.unsqueeze(-1) > 0) & (ev.unsqueeze(-2) > 0)
+        shared = ((ti.unsqueeze(-1) == ei.unsqueeze(-2)) & both).any(-1).any(-1)
+        q = (~shared).float()
     elif metric == "target_top_gap":
         # The target's OWN top-1, scored under both distributions: how much probability the
         # elicited context withholds from the token the target most wants.
@@ -171,8 +194,14 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
         t_top = pt.argmax(-1)
         idx = torch.arange(pe.shape[0], device=pe.device)
         q = (pe[idx, e_top] - pe[idx, t_top]).clamp_min(0.0)
-    else:   # elicited_outside
+    elif not metric or metric == "elicited_outside":
         q = torch.where(t_keep, torch.zeros_like(pe), pe).sum(-1)
+    else:
+        # NOT a silent fallback. A typo in BLOOM_API_Q_METRIC used to land in the
+        # elicited_outside branch and produce a run that looked perfectly healthy: at
+        # top_k=0 that metric is identically 0, so alpha never leaves alpha0 and the output
+        # is indistinguishable from a deliberate fixed-beta run.
+        raise ValueError("unknown q metric %r" % (metric,))
     return q.clamp(0.0, 1.0)
 
 

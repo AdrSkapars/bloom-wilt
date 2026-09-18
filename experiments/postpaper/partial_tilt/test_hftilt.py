@@ -19,7 +19,7 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "src"))
 
-from bloom.bloom.hftilt import _combine, _support_mask  # noqa: E402
+from bloom.bloom.hftilt import _combine, _q_of, _support_mask  # noqa: E402
 
 B, V = 3, 50
 torch.manual_seed(0)
@@ -311,11 +311,92 @@ def test_decode_loop_with_a_stub_model():
     check("k=0 decode produces tokens", all(len(o["best_ids"]) >= 1 for o in out0))
 
 
+
+
+def test_top1_disjoint_reproduces_top1_mismatch():
+    """m=1 is the SAME metric under a new name -- the regression anchor for the family."""
+    keep = torch.ones_like(TL, dtype=torch.bool)
+    a = _q_of(TL, CL, keep, keep, "top1_mismatch")
+    c = _q_of(TL, CL, keep, keep, "top1_disjoint")
+    check("top1_disjoint == top1_mismatch", torch.equal(a, c), "%r vs %r" % (a, c))
+
+
+def test_disjointness_is_rarer_as_m_grows():
+    """q must be NON-INCREASING in m: disjoint top-m implies disjoint top-(m-1).
+
+    This is the whole point of the family -- m is a dial on how often the switch fires. If
+    it were not monotone, sweeping m would not be sweeping anything interpretable.
+    """
+    tl = torch.randn(64, V)
+    cl = torch.randn(64, V)
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    qs = [_q_of(tl, cl, keep, keep, "top%d_disjoint" % m) for m in (1, 2, 3, 4, 5)]
+    for m in range(1, len(qs)):
+        check("q(m=%d) <= q(m=%d) rowwise" % (m + 1, m), bool((qs[m] <= qs[m - 1]).all()))
+    rates = [float(q.mean()) for q in qs]
+    check("firing rate strictly falls somewhere in 1..5", rates[0] > rates[-1],
+          "rates %r" % (rates,))
+
+
+def test_top5_disjoint_differs_from_top1_mismatch():
+    """The discriminating case, and the only test here that proves the two are not aliases.
+
+    A previous round of "sanity checks" compared new metrics only on inputs that were either
+    identical or fully disjoint -- where EVERY metric returns 0.0 or 1.0 -- and so passed
+    while the code under test was wrong. Row 0 below is built specifically so the two metrics
+    must DISAGREE: the argmaxes differ, but the top-5 sets are the same five tokens.
+    """
+    tl = torch.full((2, V), -10.0)
+    cl = torch.full((2, V), -10.0)
+    # row 0: same five candidates, different order -> top1 differs, top5 overlaps
+    tl[0, [0, 1, 2, 3, 4]] = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0])
+    cl[0, [0, 1, 2, 3, 4]] = torch.tensor([4.0, 5.0, 3.0, 2.0, 1.0])
+    # row 1: genuinely unrelated candidates -> both metrics fire
+    tl[1, [0, 1, 2, 3, 4]] = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0])
+    cl[1, [10, 11, 12, 13, 14]] = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0])
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    q1 = _q_of(tl, cl, keep, keep, "top1_mismatch")
+    q5 = _q_of(tl, cl, keep, keep, "top5_disjoint")
+    check("row0: top1 fires", q1[0] == 1.0, "got %r" % (q1[0],))
+    check("row0: top5 does NOT fire", q5[0] == 0.0, "got %r" % (q5[0],))
+    check("row1: both fire", q1[1] == 1.0 and q5[1] == 1.0, "got %r %r" % (q1[1], q5[1]))
+
+
+def test_padding_cannot_manufacture_an_overlap():
+    """A row truncated below m must not count topk's zero-probability padding as agreement."""
+    tl = torch.full((1, V), -10.0)
+    cl = torch.full((1, V), -10.0)
+    tl[0, 0] = 5.0
+    cl[0, 7] = 5.0
+    t_keep = torch.zeros_like(tl, dtype=torch.bool); t_keep[0, 0] = True
+    c_keep = torch.zeros_like(cl, dtype=torch.bool); c_keep[0, 7] = True
+    q = _q_of(tl, cl, t_keep, c_keep, "top5_disjoint")
+    check("one survivor each, different token -> disjoint", q[0] == 1.0, "got %r" % (q[0],))
+    c_keep2 = torch.zeros_like(cl, dtype=torch.bool); c_keep2[0, 0] = True
+    q2 = _q_of(tl, cl, t_keep, c_keep2, "top5_disjoint")
+    check("one survivor each, same token -> not disjoint", q2[0] == 0.0, "got %r" % (q2[0],))
+
+
+def test_unknown_metric_raises():
+    """A typo must not quietly become elicited_outside, which is identically 0 at k=0."""
+    keep = torch.ones_like(TL, dtype=torch.bool)
+    try:
+        _q_of(TL, CL, keep, keep, "top1_mismtach")
+        check("unknown metric raises", False, "no exception")
+    except ValueError:
+        check("unknown metric raises", True)
+
 for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_support_is_union,
            test_poe_union_zero_fills_the_missing_side,
            test_alpha0_matches_the_fixed_weights_at_q0, test_q_is_bounded_and_responds,
            test_renormalisation_is_a_noop_for_poe, test_probabilities_live_only_on_the_support,
-           test_empty_intersection_is_reachable, test_decode_loop_with_a_stub_model):
+           test_empty_intersection_is_reachable,
+           test_top1_disjoint_reproduces_top1_mismatch,
+           test_disjointness_is_rarer_as_m_grows,
+           test_top5_disjoint_differs_from_top1_mismatch,
+           test_padding_cannot_manufacture_an_overlap,
+           test_unknown_metric_raises,
+           test_decode_loop_with_a_stub_model):
     print(fn.__name__)
     fn()
 
