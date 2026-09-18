@@ -71,7 +71,10 @@ def cmd_score(a):
     _, e_sys, e_pre, _, _ = _prompts(beh=a.beh)
     a_sys, a_pre = ANTI[a.beh]
 
-    files = _transcripts(a.beh, a.model, a.arm)
+    # --gen is whose transcripts these are, --model is who SCORES them. Conflating the two
+    # makes cross-model scoring impossible: it would look for Llama transcripts under a Llama
+    # directory that was never fetched, instead of scoring Qwen's transcripts with Llama.
+    files = _transcripts(a.beh, a.gen or a.model, a.arm)
     if not files:
         print("no transcripts -- run fetch first")
         return
@@ -134,7 +137,8 @@ def cmd_score(a):
         if (i + 1) % 20 == 0:
             print("  scored %d/%d" % (i + 1, len(files)))
     os.makedirs(OUT, exist_ok=True)
-    p = os.path.join(OUT, "hf_%s_%s_%s.jsonl" % (a.beh, a.arm, a.model))
+    tag = a.model if not a.gen or a.gen == a.model else "%sgen_%ssc" % (a.gen, a.model)
+    p = os.path.join(OUT, "hf_%s_%s_%s.jsonl" % (a.beh, a.arm, tag))
     with io.open(p, "w", encoding="utf-8", newline="") as fh:
         for r in out:
             fh.write(json.dumps(r) + "\n")
@@ -191,6 +195,8 @@ if __name__ == "__main__":
         p.add_argument("--beh", required=True)
         p.add_argument("--model", required=True, choices=sorted(MODELDIR))
         p.add_argument("--arm", required=True)
+        p.add_argument("--gen", default=None,
+                       help="model whose transcripts to score (default: same as --model)")
     p = sub.add_parser("report")
     p.set_defaults(fn=cmd_report)
     p.add_argument("--hi", type=float, default=50.0)
