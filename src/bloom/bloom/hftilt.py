@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import time
 from typing import Dict, List, Optional
@@ -108,6 +109,9 @@ def _support_mask(tl, cl, top_k: int, rule: str):
     return (t_keep & c_keep) if rule == "poe" else (t_keep | c_keep)
 
 
+_TOPM = re.compile(r"^top([0-9]+)_(disjoint|tv|outside)$")
+
+
 def _q_of(tl, cl, t_keep, c_keep, metric: str):
     """Per-row disagreement q in [0, 1], from the TRUNCATED sides.
 
@@ -152,29 +156,50 @@ def _q_of(tl, cl, t_keep, c_keep, metric: str):
         # hellinger, the fine structure of the disagreement is not what matters and the
         # continuous metrics are buying nothing.
         q = (pt.argmax(-1) != pe.argmax(-1)).float()
-    elif metric.startswith("top") and metric.endswith("_disjoint"):
-        # "are the two sides' top-m sets disjoint": 1 when they share no candidate at all,
-        # 0 otherwise. A STRICT REFINEMENT of top1_mismatch rather than a separate idea --
-        # top1_disjoint IS top1_mismatch, and raising m makes the switch fire strictly less
-        # often, because disjoint top-m sets imply disjoint top-1s but not the reverse. So m
-        # is a dial on HOW OFTEN the elicited side gets its boost, which is a different axis
-        # from alpha0/alpha_min/kappa -- those set HOW HARD it is boosted at the positions
-        # that fire and leave the firing rate untouched.
+    elif _TOPM.match(metric):
+        # The top-m FAMILY: everything here measures disagreement inside a window of m
+        # candidates per side, and nothing here cares what the combine rule truncates to. That
+        # separation is the point -- the window is the MEASUREMENT scale, so the beta schedule
+        # can be driven by partial information while the logits are still combined in full.
         #
-        # It is also the hosted algorithm's failure case turned into a signal: with only the
-        # top-5 logprobs an empty overlap left the product with no support and forced a
-        # fallback (1-6% of positions on DeepSeek). Here the full logits are always there, so
-        # nothing degenerates -- the same condition is simply evidence that the two contexts
-        # want unrelated things.
-        m = int(metric[3:-9])
-        tv, ti = pt.topk(m, dim=-1)
-        ev, ei = pe.topk(m, dim=-1)
-        # Only count a shared index if BOTH sides actually put mass on it. Under truncation a
-        # row can have fewer than m survivors and topk pads with zero-probability entries,
-        # whose indices would otherwise manufacture an overlap out of padding.
-        both = (tv.unsqueeze(-1) > 0) & (ev.unsqueeze(-2) > 0)
-        shared = ((ti.unsqueeze(-1) == ei.unsqueeze(-2)) & both).any(-1).any(-1)
-        q = (~shared).float()
+        #   top{m}_disjoint  1 when the two top-m sets share no candidate, else 0.
+        #   top{m}_tv        total variation between the two top-m distributions, each
+        #                    renormalised over its own window. Smooth, and EXACTLY 1 when the
+        #                    sets are disjoint -- so _disjoint is this thresholded at 1, not a
+        #                    different idea.
+        #   top{m}_outside   the elicited window's mass on candidates the target's window did
+        #                    not propose. The hosted engine's elicited_outside with the window
+        #                    pinned at m, which is what stops it degenerating: the plain
+        #                    metric measures mass outside a set that GROWS with top_k, so it
+        #                    goes to 0 as truncation relaxes (0.17 -> 0.0000 over the sweep).
+        _mo = _TOPM.match(metric)
+        m, kind = int(_mo.group(1)), _mo.group(2)
+        tv_, ti = pt.topk(m, dim=-1)
+        ev_, ei = pe.topk(m, dim=-1)
+        if kind == "disjoint":
+            # Only count a shared index if BOTH sides actually put mass on it. Under truncation
+            # a row can have fewer than m survivors and topk pads with zero-probability
+            # entries, whose indices would otherwise manufacture an overlap out of padding.
+            both = (tv_.unsqueeze(-1) > 0) & (ev_.unsqueeze(-2) > 0)
+            shared = ((ti.unsqueeze(-1) == ei.unsqueeze(-2)) & both).any(-1).any(-1)
+            q = (~shared).float()
+        else:
+            # Scatter each window back to vocab width so the two can be compared token by
+            # token: the windows hold DIFFERENT tokens, so an elementwise op on the topk
+            # outputs would be comparing the target's 3rd choice against the elicited side's
+            # 3rd choice, which are unrelated.
+            zt = torch.zeros_like(pt).scatter(-1, ti, tv_)
+            ze = torch.zeros_like(pe).scatter(-1, ei, ev_)
+            zt = zt / zt.sum(-1, keepdim=True).clamp_min(1e-12)
+            ze = ze / ze.sum(-1, keepdim=True).clamp_min(1e-12)
+            if kind == "tv":
+                q = 0.5 * (zt - ze).abs().sum(-1)
+            else:   # outside
+                # Membership from the INDICES, not from zt > 0: a tail token inside the window
+                # can underflow to exactly 0 in float32 and would then read as "outside".
+                t_in = torch.zeros_like(pt, dtype=torch.bool).scatter(
+                    -1, ti, torch.ones_like(ti, dtype=torch.bool))
+                q = torch.where(t_in, torch.zeros_like(ze), ze).sum(-1)
     elif metric == "target_top_gap":
         # The target's OWN top-1, scored under both distributions: how much probability the
         # elicited context withholds from the token the target most wants.
@@ -307,15 +332,12 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
     # topM_disjoint is a FAMILY, not a name -- top1_disjoint, top2_disjoint, ... -- so
     # membership has to be parsed. m must be a positive integer: "topfive_disjoint" would
     # otherwise slip through to the decode and die per-position instead of here, at startup.
-    _m_ok = False
-    if q_metric.startswith("top") and q_metric.endswith("_disjoint"):
-        _m = q_metric[3:-9]
-        _m_ok = _m.isdigit() and int(_m) >= 1
+    _m_ok = bool(_TOPM.match(q_metric)) and int(_TOPM.match(q_metric).group(1)) >= 1
     if q_metric not in _METRICS and not _m_ok:
         # The old message named three of the seven metrics it accepted, which is worse than
         # useless when the entire job of the error is to say what you may write instead.
         raise RuntimeError(f"partial_tilt_output.mix.q_metric={q_metric!r} unknown "
-                           f"({' | '.join(_METRICS)} | topM_disjoint)")
+                           f"({' | '.join(_METRICS)} | topM_disjoint|tv|outside)")
     if adaptive and not (0.0 <= alpha0 <= 1.0):
         raise RuntimeError(f"partial_tilt_output.mix.alpha0={alpha0!r} must be in [0, 1]")
     measure = bool(jail_runtime_cfg.get("hf_measure_oracle", True))

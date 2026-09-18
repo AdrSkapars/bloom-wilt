@@ -383,6 +383,69 @@ def test_top5_disjoint_differs_from_top1_mismatch():
     check("row1: both fire", q1[1] == 1.0 and q5[1] == 1.0, "got %r %r" % (q1[1], q5[1]))
 
 
+def test_topm_tv_is_the_smooth_form_of_topm_disjoint():
+    """TV over the two top-m windows is EXACTLY 1 iff the windows are disjoint.
+
+    That identity is the reason the smooth metric belongs to the same family rather than
+    being a second idea: top5_disjoint is top5_tv thresholded at 1.
+    """
+    tl = torch.randn(256, V)
+    cl = torch.randn(256, V)
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    d = _q_of(tl, cl, keep, keep, "top5_disjoint")
+    t = _q_of(tl, cl, keep, keep, "top5_tv")
+    check("tv == 1 exactly where disjoint fires",
+          bool(((t > 1 - 1e-5) == (d > 0.5)).all()),
+          "disjoint %d rows, tv==1 %d rows" % (int((d > 0.5).sum()), int((t > 1 - 1e-5).sum())))
+
+
+def test_topm_tv_is_actually_graded():
+    """The discriminating test: a smooth metric must take values strictly inside (0, 1).
+
+    If it only ever returned 0 or 1 it would be the binary metric wearing a different name,
+    and the whole point of the smooth family would be lost -- which is precisely the kind of
+    thing an earlier round of checks failed to notice.
+    """
+    tl = torch.randn(256, V)
+    cl = torch.randn(256, V)
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    for name in ("top5_tv", "top5_outside"):
+        q = _q_of(tl, cl, keep, keep, name)
+        interior = ((q > 1e-4) & (q < 1 - 1e-4)).float().mean()
+        check("%s is graded, not a switch" % name, float(interior) > 0.25,
+              "only %.1f%% of rows strictly inside (0,1)" % (100 * float(interior)))
+        check("%s stays in [0,1]" % name, bool((q >= 0).all() and (q <= 1).all()))
+
+
+def test_topm_tv_is_not_the_full_vocab_tv():
+    """The window is the point: pinning it at m must differ from measuring over everything."""
+    tl = torch.randn(128, V)
+    cl = torch.randn(128, V)
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    windowed = _q_of(tl, cl, keep, keep, "top5_tv")
+    full = _q_of(tl, cl, keep, keep, "tv")
+    check("top5_tv differs from full-vocab tv",
+          float((windowed - full).abs().mean()) > 0.05,
+          "mean |diff| = %.4f" % float((windowed - full).abs().mean()))
+
+
+def test_topm_metrics_agree_on_the_two_extremes():
+    """Identical windows -> 0; disjoint windows -> 1. Both smooth metrics, both ends."""
+    tl = torch.full((2, V), -10.0)
+    cl = torch.full((2, V), -10.0)
+    vals = torch.tensor([5.0, 4.0, 3.0, 2.0, 1.0])
+    tl[0, [0, 1, 2, 3, 4]] = vals
+    cl[0, [0, 1, 2, 3, 4]] = vals            # identical
+    tl[1, [0, 1, 2, 3, 4]] = vals
+    cl[1, [10, 11, 12, 13, 14]] = vals       # disjoint
+    keep = torch.ones_like(tl, dtype=torch.bool)
+    for name in ("top5_tv", "top5_outside"):
+        q = _q_of(tl, cl, keep, keep, name)
+        check("%s: identical windows -> 0" % name, abs(float(q[0])) < 1e-5, "got %r" % float(q[0]))
+        check("%s: disjoint windows -> 1" % name, abs(float(q[1]) - 1.0) < 1e-5,
+              "got %r" % float(q[1]))
+
+
 def test_padding_cannot_manufacture_an_overlap():
     """A row truncated below m must not count topk's zero-probability padding as agreement."""
     tl = torch.full((1, V), -10.0)
@@ -415,6 +478,10 @@ for fn in (test_k0_is_logittilt, test_poe_support_is_intersection, test_mix_supp
            test_top1_disjoint_reproduces_top1_mismatch,
            test_disjointness_is_rarer_as_m_grows,
            test_top5_disjoint_differs_from_top1_mismatch,
+           test_topm_tv_is_the_smooth_form_of_topm_disjoint,
+           test_topm_tv_is_actually_graded,
+           test_topm_tv_is_not_the_full_vocab_tv,
+           test_topm_metrics_agree_on_the_two_extremes,
            test_padding_cannot_manufacture_an_overlap,
            test_unknown_metric_raises,
            test_decode_loop_with_a_stub_model):
