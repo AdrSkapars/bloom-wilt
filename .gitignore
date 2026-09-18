@@ -62,3 +62,4 @@ experiments/bloom/_banks/
 # commit enormous, triggered CRLF rewrite warnings on hundreds of JSON files, and
 # made the server checkout collide with its own untracked copies on every pull.
 experiments/postpaper/runs_*/
+experiments/postpaper/oracle_check/out/
