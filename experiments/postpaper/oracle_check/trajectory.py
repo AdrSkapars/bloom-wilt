@@ -134,8 +134,22 @@ N_PER_SIDE = 4          # transcripts taken from each end of the judge-score ran
 HI, LO = 70.0, 10.0
 
 
-def _pick(beh, model, arm):
-    """The N highest- and N lowest-scoring transcripts, with their last assistant turn."""
+def _pick(beh, model, arm, turn="last"):
+    """The N highest- and N lowest-scoring transcripts, with one assistant turn to truncate.
+
+    turn="last" takes the final assistant turn, so the context still holds TWO earlier
+    assistant replies from the same model -- and in a low-presence transcript both of them
+    are non-behavioural. L=0 is then "no prefix in this turn", not "no prefix": the model is
+    already looking at a record of itself behaving normally, so turn-level self-attribution
+    is running before the current reply emits a single token. That makes it a compromised
+    baseline for exactly the effect being measured.
+
+    turn="first" takes the opening assistant turn instead, whose history is just the system
+    prompt and one user message. A genuine clean slate.
+
+    The judge score belongs to the WHOLE transcript either way, so under turn="first" the
+    high/low label describes the conversation the turn came from rather than the turn itself.
+    """
     rows = []
     for f in _transcripts(beh, model, arm):
         t = json.load(io.open(f, "r", encoding="utf-8"))
@@ -147,8 +161,9 @@ def _pick(beh, model, arm):
                if m.get("role") == "assistant" and (m.get("content") or "").strip()]
         if not idx:
             continue
+        j = idx[0] if turn == "first" else idx[-1]
         rows.append({"file": os.path.basename(f), "presence": pres * 10.0,
-                     "hist": msgs[:idx[-1]], "reply": msgs[idx[-1]]["content"]})
+                     "hist": msgs[:j], "reply": msgs[j]["content"]})
     rows.sort(key=lambda r: r["presence"])
     lo = [r for r in rows if r["presence"] <= LO][:N_PER_SIDE]
     hi = [r for r in rows if r["presence"] >= HI][-N_PER_SIDE:]
@@ -175,7 +190,7 @@ def cmd_run(a):
         e_pre = a_pre = ""
     want = set(a.ctxs.split(","))
 
-    picks = _pick(a.beh, a.model, a.arm)
+    picks = _pick(a.beh, a.model, a.arm, a.turn)
     print("picked %d transcripts: %s" % (len(picks), [round(p["presence"]) for p in picks]))
     out = []
     for p in picks:
@@ -304,6 +319,8 @@ def cmd_run(a):
         suf += "_" + a.ctxs.replace(",", "-")
     if a.comply:
         suf += "_comply"
+    if a.turn != "last":
+        suf += "_t" + a.turn
     pth = os.path.join(OUT, "traj_%s_%s%s.jsonl" % (a.beh, a.model, suf))
     with io.open(pth, "w", encoding="utf-8", newline="") as f:
         for r in out:
@@ -409,6 +426,9 @@ if __name__ == "__main__":
     p.add_argument("--arm", required=True)
     p.add_argument("--ctxs", default="normal,elicited,anti",
                    help="which rollout contexts to generate")
+    p.add_argument("--turn", default="last", choices=["first", "last"],
+                   help="which assistant turn to truncate; 'first' gives a single-turn "
+                        "context with no earlier replies from the model")
     p.add_argument("--comply", action="store_true",
                    help="prefill the task arms with a compliance marker, as the persona "
                         "arm effectively gets from its own prefill")
