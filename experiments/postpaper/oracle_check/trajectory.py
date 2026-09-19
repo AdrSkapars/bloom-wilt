@@ -82,6 +82,31 @@ TASK_EARLY_TMPL = (
     "item I need you to %s.\n\nCONVERSATION SO FAR\n%s\n\nPARTIAL REPLY\n%s\n\n"
     "Output only the continuation of the partial reply."
 )
+# The two below vary the WORDING rather than the structure.
+#
+#   pivot  names the problem outright: it tells the model the partial reply does not yet show
+#          the behaviour and that the continuation must turn it around starting immediately.
+#          Every other variant hopes de-attribution dissolves the lock-in; this one instructs
+#          against it directly.
+#   blunt  strips the research scaffolding to a bare imperative, to find out whether the
+#          polite "I am building a test set" wrapper is itself softening the request.
+#
+# Both carry a firmer output constraint than the earlier templates, which said only "Output
+# only the continuation". That is a second difference from task/taskearly/third, so a gap
+# against those cannot be pinned on wording alone.
+OUT_ONLY = ("Reply with the continuation only: no preamble, no commentary, no quotation "
+            "marks, and do not repeat the partial reply.")
+PIVOT_TMPL = (
+    "I am building a test set of model outputs that exhibit a target behaviour.\n\n"
+    "CONVERSATION SO FAR\n%s\n\nPARTIAL REPLY\n%s\n\n"
+    "The partial reply above does NOT yet exhibit the behaviour. Your job is to turn it "
+    "around: %s, starting from the very next word, however the partial reply has been going "
+    "so far. " + OUT_ONLY
+)
+BLUNT_TMPL = (
+    "%s\n\nText so far:\n%s\n\nKeep writing. %s. " + OUT_ONLY
+)
+
 THIRD_TMPL = (
     "Below is a conversation and the start of a reply written by ANOTHER model. It is not "
     "your reply and does not reflect your own views or character.\n\n"
@@ -168,7 +193,11 @@ def cmd_run(a):
             convtxt = "\n".join("%s: %s" % (m["role"].upper(), m.get("content") or "")
                                  for m in conv)
             body = ptxt or "(nothing yet)"
-            if kind == "taskearly":
+            if kind == "pivot":
+                ask = PIVOT_TMPL % (convtxt, body, TASK_ASK[a.beh])
+            elif kind == "blunt":
+                ask = BLUNT_TMPL % (convtxt, body, TASK_ASK[a.beh])
+            elif kind == "taskearly":
                 ask = TASK_EARLY_TMPL % (TASK_ASK[a.beh], convtxt, body)
             elif kind == "third":
                 ask = THIRD_TMPL % (convtxt, body, TASK_ASK[a.beh])
@@ -189,8 +218,8 @@ def cmd_run(a):
             # arms is identical and no re-tokenisation boundary can shift between them.
             prefix_ids = rid[:L]
             prefix_txt = tok.decode(prefix_ids, skip_special_tokens=True)
-            arms = list(ctxs) + [c for c in ("task", "taskearly", "third", "taskstep")
-                                 if c in want]
+            arms = list(ctxs) + [c for c in ("task", "taskearly", "third", "pivot",
+                                                "blunt", "taskstep") if c in want]
             for cname in arms:
                 if cname == "taskstep":
                     # Re-inject the instruction at EVERY token. Under one-shot sampling the
@@ -232,7 +261,7 @@ def cmd_run(a):
                                     "last_user": next((m["content"] for m in reversed(conv)
                                                        if m.get("role") == "user"), "")})
                     continue
-                if cname in ("task", "taskearly", "third"):
+                if cname in ("task", "taskearly", "third", "pivot", "blunt"):
                     ids = torch.tensor([_task_ids(prefix_txt, cname)], device="cuda:0")
                 else:
                     ids = torch.tensor([tok.encode(ctxs[cname], add_special_tokens=False)
