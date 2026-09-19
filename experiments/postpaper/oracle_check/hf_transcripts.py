@@ -70,6 +70,36 @@ def cmd_score(a):
     pre = THINK_PREFILL if think else ""
     _, e_sys, e_pre, _, _ = _prompts(beh=a.beh)
     a_sys, a_pre = ANTI[a.beh]
+    # Imported lazily: trajectory imports THIS module, so a top-level import would be
+    # circular. By the time cmd_score runs, hf_transcripts is fully loaded and the cycle
+    # resolves.
+    import trajectory as TJ
+
+    def _reframed(kind, convtxt):
+        """A reframed context, built ONCE with an empty partial reply.
+
+        A faithful version would rebuild the prompt at every token, since these templates
+        quote the reply-so-far inside the request -- but that is the per-token cost that made
+        the taskstep rollout arm take hours. Building it once, with the whole reply teacher-
+        forced into the assistant slot, is the exact analogue of how the persona context is
+        scored here, so the comparison is like-for-like. It does mean this measures the
+        FRAMING, not the per-token re-injection, and it is the L=0 configuration -- the one
+        where the reframing performed worst in the rollouts.
+        """
+        body = "(nothing yet)"
+        ask = TJ.TASK_ASK[a.beh]
+        if kind == "pivot":
+            q = TJ.PIVOT_TMPL % (convtxt, body, ask)
+        elif kind == "blunt":
+            q = TJ.BLUNT_TMPL % (convtxt, body, ask)
+        elif kind == "third":
+            q = TJ.THIRD_TMPL % (convtxt, body, ask)
+        else:
+            q = TJ.TASK_TMPL % (convtxt, body, ask)
+        return tok.apply_chat_template([{"role": "user", "content": q}], tokenize=False,
+                                       add_generation_prompt=True) + pre + TJ.COMPLY
+
+    REFRAMED = ("task", "pivot", "third", "blunt")
 
     # --gen is whose transcripts these are, --model is who SCORES them. Conflating the two
     # makes cross-model scoring impossible: it would look for Llama transcripts under a Llama
@@ -86,12 +116,18 @@ def cmd_score(a):
             continue
         msgs = t["messages"]
         acc = {"t": [], "e": [], "d": [], "a": [], "da": []}
+        for k_ in REFRAMED:
+            acc[k_] = []
+            acc["d" + k_] = []
         # ...and the same quantities restricted to the OPENING of each turn. The context gap
         # was measured earlier to live almost entirely in the first decile of a reply: both
         # contexts share the generated prefix, so once the turn has committed they agree on
         # how to continue. Pooling every token of every turn therefore dilutes a short strong
         # signal with a long flat tail. Collected here so the restriction costs no extra pass.
         head = {"t": [], "e": [], "d": [], "a": [], "da": []}
+        for k_ in REFRAMED:
+            head[k_] = []
+            head["d" + k_] = []
         HEAD = 8
         # Every assistant turn is scored against its own preceding conversation, which is what
         # the decode conditions on. The behaviour score is per TRANSCRIPT, so the per-token
@@ -122,6 +158,17 @@ def cmd_score(a):
             for k, w in (("t", wt), ("e", we), ("a", wa),
                          ("d", we - wt), ("da", we - wa)):
                 head[k] += _gather_lp(w, tgt)[:HEAD]
+            convtxt = "\n".join("%s: %s" % (x["role"].upper(), x.get("content") or "")
+                                 for x in conv)
+            for k_ in REFRAMED:
+                wr, _ = _logit_window(model, tok, _reframed(k_, convtxt), m["content"])
+                lp_r = _gather_lp(wr, tgt)
+                lp_d = _gather_lp(wr - wt, tgt)
+                acc[k_] += lp_r
+                acc["d" + k_] += lp_d
+                head[k_] += lp_r[:HEAD]
+                head["d" + k_] += lp_d[:HEAD]
+                del wr
             del wt, we, wa
         if not acc["t"]:
             continue
@@ -133,7 +180,11 @@ def cmd_score(a):
                     "diff": st.mean(acc["d"]), "diff_anti": st.mean(acc["da"]),
                     "h_lp_target": st.mean(head["t"]), "h_lp_elicited": st.mean(head["e"]),
                     "h_delta": st.mean(head["e"]) - st.mean(head["t"]),
-                    "h_diff": st.mean(head["d"]), "h_diff_anti": st.mean(head["da"])})
+                    "h_diff": st.mean(head["d"]), "h_diff_anti": st.mean(head["da"]),
+                    **{("lp_" + k_): st.mean(acc[k_]) for k_ in REFRAMED},
+                    **{("diff_" + k_): st.mean(acc["d" + k_]) for k_ in REFRAMED},
+                    **{("h_lp_" + k_): st.mean(head[k_]) for k_ in REFRAMED},
+                    **{("h_diff_" + k_): st.mean(head["d" + k_]) for k_ in REFRAMED}})
         if (i + 1) % 20 == 0:
             print("  scored %d/%d" % (i + 1, len(files)))
     os.makedirs(OUT, exist_ok=True)
@@ -180,7 +231,13 @@ def cmd_report(a):
                          ("h_lp_target", "[head8] target alone"),
                          ("h_lp_elicited", "[head8] elicited alone"),
                          ("h_delta", "[head8] delta"),
-                         ("h_diff", "[head8] PURE DIFF")):
+                         ("h_diff", "[head8] PURE DIFF")) + tuple(
+                             (k2, lab2) for k_ in ("task", "pivot", "third", "blunt")
+                             for k2, lab2 in ((("lp_" + k_), (k_ + " alone")),
+                                              (("diff_" + k_), (k_ + " PURE DIFF")),
+                                              (("h_diff_" + k_), ("[head8] " + k_ + " DIFF")))):
+            if key not in hi[0]:
+                continue
             auc = _auc([r[key] for r in hi], [r[key] for r in lo])
             bar = "#" * int(round(abs(auc - 0.5) * 40))
             print("  %-22s AUC=%.3f  %s" % (lab, auc, bar))
