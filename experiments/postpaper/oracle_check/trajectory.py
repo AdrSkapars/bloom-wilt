@@ -271,7 +271,7 @@ def cmd_run(a):
                     for k in range(ROLLOUTS):
                         out.append({"id": "%s|L%d|%s|%d" % (p["file"], L, cn, k),
                                     "beh": a.beh, "file": p["file"], "side": p["side"],
-                                    "src_presence": p["presence"], "L": L, "ctx": cname,
+                                    "src_presence": p["presence"], "L": L, "ctx": cn,
                                     "roll": k, "prefix": prefix_txt, "comply": bool(a.comply),
                                     "reply": (prefix_txt + outs[k]).strip(),
                                     "last_user": next((m["content"] for m in reversed(conv)
@@ -291,7 +291,7 @@ def cmd_run(a):
                     cont = tok.decode(gen[k][ids.shape[1]:], skip_special_tokens=True)
                     out.append({"id": "%s|L%d|%s|%d" % (p["file"], L, cn, k),
                                 "beh": a.beh, "file": p["file"], "side": p["side"],
-                                "src_presence": p["presence"], "L": L, "ctx": cname,
+                                "src_presence": p["presence"], "L": L, "ctx": cn,
                                 "roll": k, "prefix": prefix_txt, "comply": bool(a.comply),
                                 "reply": (prefix_txt + cont).strip(),
                                 "last_user": next((m["content"] for m in reversed(conv)
