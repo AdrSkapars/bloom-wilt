@@ -284,7 +284,7 @@ def cmd_run(a):
                                 continue
                             outs[k] += tok.decode([tkn], skip_special_tokens=True)
                     for k in range(ROLLOUTS):
-                        out.append({"id": "%s|L%d|%s|%d" % (p["file"], L, cn, k),
+                        out.append({"id": "%s|L%d|%s|%s|%d" % (p["file"], L, cn, a.turn, k),
                                     "beh": a.beh, "file": p["file"], "side": p["side"],
                                     "src_presence": p["presence"], "L": L, "ctx": cn,
                                     "roll": k, "prefix": prefix_txt, "comply": bool(a.comply),
@@ -304,7 +304,7 @@ def cmd_run(a):
                                          pad_token_id=tok.pad_token_id or tok.eos_token_id)
                 for k in range(ROLLOUTS):
                     cont = tok.decode(gen[k][ids.shape[1]:], skip_special_tokens=True)
-                    out.append({"id": "%s|L%d|%s|%d" % (p["file"], L, cn, k),
+                    out.append({"id": "%s|L%d|%s|%s|%d" % (p["file"], L, cn, a.turn, k),
                                 "beh": a.beh, "file": p["file"], "side": p["side"],
                                 "src_presence": p["presence"], "L": L, "ctx": cn,
                                 "roll": k, "prefix": prefix_txt, "comply": bool(a.comply),
