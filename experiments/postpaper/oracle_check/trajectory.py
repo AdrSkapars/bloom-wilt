@@ -21,9 +21,10 @@ trajectory has taken over and the prompt only ever mattered at the start.
   different: bon has one transcript per scenario, so those prefixes necessarily come from
   different user prompts. That factor is descriptive only.
 
-  The elicited arm does NOT get its usual prefill ("As a racist:"). Stacking that on top of a
-  real prefix would make the two arms differ in two ways at once; without it the system
-  prompt is the only difference.
+  The elicited arm KEEPS its usual prefill ("As a racist:"), because that is the context the
+  algorithm actually runs. It does mean the two arms differ by both the system prompt and the
+  prefill rather than by the system prompt alone -- but an isolated contrast that no decode
+  ever uses would answer a question nobody asked. --no-prefill runs the isolated version.
 
     python trajectory.py run    --beh racial --model qwen --arm bon
     python trajectory.py judge  --beh racial
@@ -88,7 +89,9 @@ def cmd_run(a):
     model = AutoModelForCausalLM.from_pretrained(mid, dtype=torch.bfloat16, device_map="cuda:0")
     model.eval()
     pre = THINK_PREFILL if core.uses_think_block(mid) else ""
-    _, e_sys, _, _, _ = _prompts(a.beh)
+    _, e_sys, e_pre, _, _ = _prompts(a.beh)
+    if a.no_prefill:
+        e_pre = ""
 
     picks = _pick(a.beh, a.model, a.arm)
     print("picked %d transcripts: %s" % (len(picks), [round(p["presence"]) for p in picks]))
@@ -100,7 +103,7 @@ def cmd_run(a):
                                               add_generation_prompt=True) + pre,
             "elicited": tok.apply_chat_template(
                 ([{"role": "system", "content": e_sys}] if e_sys else []) + conv,
-                tokenize=False, add_generation_prompt=True) + pre,
+                tokenize=False, add_generation_prompt=True) + pre + e_pre,
         }
         rid = tok.encode(p["reply"], add_special_tokens=False)
         for L in LS:
@@ -130,7 +133,8 @@ def cmd_run(a):
         print("  %s (%s, %.0f): %d rollouts so far" % (p["file"], p["side"],
                                                         p["presence"], len(out)))
     os.makedirs(OUT, exist_ok=True)
-    pth = os.path.join(OUT, "traj_%s_%s.jsonl" % (a.beh, a.model))
+    pth = os.path.join(OUT, "traj_%s_%s%s.jsonl"
+                       % (a.beh, a.model, "_noprefill" if a.no_prefill else ""))
     with io.open(pth, "w", encoding="utf-8", newline="") as f:
         for r in out:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -218,6 +222,8 @@ if __name__ == "__main__":
     p.add_argument("--beh", required=True)
     p.add_argument("--model", required=True, choices=sorted(MODELDIR))
     p.add_argument("--arm", required=True)
+    p.add_argument("--no-prefill", action="store_true",
+                   help="drop the elicited prefill, isolating the system prompt")
     for n, fn in (("judge", cmd_judge), ("report", cmd_report)):
         q = sub.add_parser(n)
         q.set_defaults(fn=fn)
