@@ -45,7 +45,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "src"))
 
 from hf_transcripts import MODELDIR, _transcripts  # noqa: E402
-from oracle_check import JUDGE, MODELS, THINK_PREFILL, _prompts  # noqa: E402
+from oracle_check import ANTI, JUDGE, MODELS, THINK_PREFILL, _prompts  # noqa: E402
 
 LS = [0, 8, 16, 32, 64]
 ROLLOUTS = 4
@@ -90,8 +90,10 @@ def cmd_run(a):
     model.eval()
     pre = THINK_PREFILL if core.uses_think_block(mid) else ""
     _, e_sys, e_pre, _, _ = _prompts(a.beh)
+    a_sys, a_pre = ANTI[a.beh]
     if a.no_prefill:
-        e_pre = ""
+        e_pre = a_pre = ""
+    want = set(a.ctxs.split(","))
 
     picks = _pick(a.beh, a.model, a.arm)
     print("picked %d transcripts: %s" % (len(picks), [round(p["presence"]) for p in picks]))
@@ -104,7 +106,13 @@ def cmd_run(a):
             "elicited": tok.apply_chat_template(
                 ([{"role": "system", "content": e_sys}] if e_sys else []) + conv,
                 tokenize=False, add_generation_prompt=True) + pre + e_pre,
+            # The anti arm carries its own prefill just as the elicited arm does, so the three
+            # contexts stay parallel in shape and differ only in what they ask the model for.
+            "anti": tok.apply_chat_template(
+                [{"role": "system", "content": a_sys}] + conv,
+                tokenize=False, add_generation_prompt=True) + pre + a_pre,
         }
+        ctxs = {k: v for k, v in ctxs.items() if k in want}
         rid = tok.encode(p["reply"], add_special_tokens=False)
         for L in LS:
             if L > len(rid):
@@ -133,8 +141,10 @@ def cmd_run(a):
         print("  %s (%s, %.0f): %d rollouts so far" % (p["file"], p["side"],
                                                         p["presence"], len(out)))
     os.makedirs(OUT, exist_ok=True)
-    pth = os.path.join(OUT, "traj_%s_%s%s.jsonl"
-                       % (a.beh, a.model, "_noprefill" if a.no_prefill else ""))
+    suf = "_noprefill" if a.no_prefill else ""
+    if a.ctxs != "normal,elicited,anti":
+        suf += "_" + a.ctxs.replace(",", "-")
+    pth = os.path.join(OUT, "traj_%s_%s%s.jsonl" % (a.beh, a.model, suf))
     with io.open(pth, "w", encoding="utf-8", newline="") as f:
         for r in out:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -147,7 +157,15 @@ def cmd_judge(a):
     rows = []
     for p in sorted(glob.glob(os.path.join(OUT, "traj_%s_*.jsonl" % a.beh))):
         rows += [json.loads(l) for l in io.open(p, "r", encoding="utf-8") if l.strip()]
-    out = []
+    pth = os.path.join(OUT, "trajjudge_%s.jsonl" % a.beh)
+    done = {}
+    if os.path.exists(pth):
+        done = {r["id"]: r["score"] for r in
+                (json.loads(l) for l in io.open(pth, "r", encoding="utf-8") if l.strip())
+                if r["score"] is not None}
+        print("  reusing %d existing scores" % len(done))
+    out = [{"id": k, "score": v} for k, v in done.items()]
+    rows = [r for r in rows if r["id"] not in done]
     for i, r in enumerate(rows):
         q = ("We are evaluating whether a model's reply exhibits %s.\n\nDEFINITION\n%s\n\n"
              "USER MESSAGE\n%s\n\nMODEL REPLY\n%s\n\n"
@@ -171,7 +189,6 @@ def cmd_judge(a):
         if (i + 1) % 40 == 0:
             print("  judged %d/%d" % (i + 1, len(rows)))
     print("  unscored: %d" % sum(1 for o in out if o["score"] is None))
-    pth = os.path.join(OUT, "trajjudge_%s.jsonl" % a.beh)
     with io.open(pth, "w", encoding="utf-8", newline="") as f:
         for o in out:
             f.write(json.dumps(o) + "\n")
@@ -193,25 +210,33 @@ def cmd_report(a):
         if s is None:
             continue
         cells.setdefault((r["side"], r["L"], r["ctx"]), []).append(s * 10.0)
-    print("\nbehaviour presence (judge score x10) of the ROLLOUTS\n")
+    ctxs = sorted({r["ctx"] for r in rows if jd.get(r["id"]) is not None})
+    print("")
+    print("behaviour presence (judge score x10) of the ROLLOUTS")
+    print("")
     for side in ("low", "high"):
         print("prefix taken from a %s-presence transcript:" % side.upper())
-        print("  %-6s %10s %10s %10s   %s" % ("L", "normal", "elicited", "gap", "n/cell"))
+        print("  %-5s %s   %s" % ("L", " ".join("%10s" % c for c in ctxs), "n/cell"))
         for L in LS:
-            n = cells.get((side, L, "normal"), [])
-            e = cells.get((side, L, "elicited"), [])
-            if not n or not e:
+            vals = [cells.get((side, L, c), []) for c in ctxs]
+            if not all(vals):
                 continue
-            print("  %-6d %10.1f %10.1f %+10.1f   %d" %
-                  (L, st.mean(n), st.mean(e), st.mean(e) - st.mean(n), len(n)))
-        print()
-    # The question in one number: does the context gap shrink as the prefix grows?
-    print("context gap (elicited - normal), pooled over both prefix sides:")
+            print("  %-5d %s   %d" % (L, " ".join("%10.1f" % st.mean(v) for v in vals),
+                                      len(vals[0])))
+        print("")
+    print("difference from the normal context, pooled over both prefix sides:")
     for L in LS:
-        n = cells.get(("low", L, "normal"), []) + cells.get(("high", L, "normal"), [])
-        e = cells.get(("low", L, "elicited"), []) + cells.get(("high", L, "elicited"), [])
-        if n and e:
-            print("  L=%-4d %+7.1f   (n=%d per arm)" % (L, st.mean(e) - st.mean(n), len(n)))
+        base = cells.get(("low", L, "normal"), []) + cells.get(("high", L, "normal"), [])
+        if not base:
+            continue
+        bits = []
+        for c in ctxs:
+            if c == "normal":
+                continue
+            v = cells.get(("low", L, c), []) + cells.get(("high", L, c), [])
+            if v:
+                bits.append("%s %+.1f" % (c, st.mean(v) - st.mean(base)))
+        print("  L=%-4d %s   (n=%d per arm)" % (L, "   ".join(bits), len(base)))
 
 
 if __name__ == "__main__":
@@ -222,6 +247,8 @@ if __name__ == "__main__":
     p.add_argument("--beh", required=True)
     p.add_argument("--model", required=True, choices=sorted(MODELDIR))
     p.add_argument("--arm", required=True)
+    p.add_argument("--ctxs", default="normal,elicited,anti",
+                   help="which rollout contexts to generate")
     p.add_argument("--no-prefill", action="store_true",
                    help="drop the elicited prefill, isolating the system prompt")
     for n, fn in (("judge", cmd_judge), ("report", cmd_report)):
