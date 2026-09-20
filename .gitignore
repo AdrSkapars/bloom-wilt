@@ -63,3 +63,4 @@ experiments/bloom/_banks/
 # made the server checkout collide with its own untracked copies on every pull.
 experiments/postpaper/runs_*/
 experiments/postpaper/oracle_check/out/
+experiments/postpaper/branching/out/
