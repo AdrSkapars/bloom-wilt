@@ -103,14 +103,18 @@ def cmd_run(a):
                     lg[:, tok.eos_token_id] = -float("inf")   # fixed length: EOS must not end
                 lp = torch.log_softmax(lg, dim=-1)
                 p = lp.exp()
-                ents.append((-(p * lp).sum(-1)).tolist())
+                # EOS was masked to -inf, so that entry has p=0 and lp=-inf and the
+                # product is 0*-inf = nan, which poisons the whole sum. Zero the log
+                # where the probability is zero, which is the limit p*log p -> 0.
+                lpz = torch.where(p > 0, lp, torch.zeros_like(lp))
+                ents.append((-(p * lpz).sum(-1)).tolist())
                 nxt = torch.multinomial(p, 1)
                 got = lp.gather(-1, nxt)
                 lps.append(got.squeeze(-1).tolist())
                 # rank = how many tokens are strictly more likely than the drawn one
                 ranks.append((lp > got).sum(-1).tolist())
                 inp = torch.cat([inp, nxt], dim=-1)
-                del out, lg, lp, p, got
+                del out, lg, lp, lpz, p, got
         rec = []
         for i in range(B):
             rec.append({"logp": sum(lps[t][i] for t in range(a.len)),
