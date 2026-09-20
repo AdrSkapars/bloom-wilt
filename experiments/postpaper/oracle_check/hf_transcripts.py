@@ -75,7 +75,7 @@ def cmd_score(a):
     # resolves.
     import trajectory as TJ
 
-    def _reframed(kind, convtxt):
+    def _reframed(kind, convtxt, partial=""):
         """A reframed context, built ONCE with an empty partial reply.
 
         A faithful version would rebuild the prompt at every token, since these templates
@@ -86,7 +86,7 @@ def cmd_score(a):
         FRAMING, not the per-token re-injection, and it is the L=0 configuration -- the one
         where the reframing performed worst in the rollouts.
         """
-        body = "(nothing yet)"
+        body = partial or "(nothing yet)"
         ask = TJ.TASK_ASK[a.beh]
         if kind == "pivot":
             q = TJ.PIVOT_TMPL % (convtxt, body, ask)
@@ -160,6 +160,39 @@ def cmd_score(a):
                 head[k] += _gather_lp(w, tgt)[:HEAD]
             convtxt = "\n".join("%s: %s" % (x["role"].upper(), x.get("content") or "")
                                  for x in conv)
+            if a.rebuild:
+                # THE FAITHFUL VERSION. These templates quote the reply-so-far inside the
+                # request, so a context built once with an empty partial reply is only the
+                # L=0 configuration -- the one where the reframing did WORST in rollouts.
+                # Here the prompt is rebuilt every `rebuild` tokens with the reply so far
+                # quoted in it, and each block is scored against its own freshly built
+                # context. Blocks rather than single tokens because each rebuild is a full
+                # prefill of a ~1.5k-token prompt with no cache reuse; per-token was hours.
+                #
+                # The target logits come from the ONE pass already done above and are
+                # indexed by position in the reply, so the difference stays position-matched
+                # even though the two sides come from prompts of different lengths.
+                rids_ = tok.encode(m["content"], add_special_tokens=False)
+                k_ = a.variant
+                lp_r, lp_d = [], []
+                for b0 in range(0, len(rids_), a.rebuild):
+                    blk = rids_[b0:b0 + a.rebuild]
+                    ptxt = tok.decode(rids_[:b0], skip_special_tokens=True)
+                    cids = tok.encode(_reframed(k_, convtxt, ptxt), add_special_tokens=False)
+                    ii = torch.tensor([cids + blk], device="cuda:0")
+                    with torch.no_grad():
+                        lg = model(input_ids=ii).logits[0].float()
+                    wr = lg[len(cids) - 1: len(cids) - 1 + len(blk)]
+                    tg = torch.tensor(blk, device="cuda:0")
+                    lp_r += _gather_lp(wr, tg)
+                    lp_d += _gather_lp(wr - wt[b0:b0 + len(blk)], tg)
+                    del lg, wr
+                acc[k_] += lp_r
+                acc["d" + k_] += lp_d
+                head[k_] += lp_r[:HEAD]
+                head["d" + k_] += lp_d[:HEAD]
+                del wt, we, wa
+                continue
             for k_ in REFRAMED:
                 wr, _ = _logit_window(model, tok, _reframed(k_, convtxt), m["content"])
                 lp_r = _gather_lp(wr, tgt)
@@ -181,14 +214,16 @@ def cmd_score(a):
                     "h_lp_target": st.mean(head["t"]), "h_lp_elicited": st.mean(head["e"]),
                     "h_delta": st.mean(head["e"]) - st.mean(head["t"]),
                     "h_diff": st.mean(head["d"]), "h_diff_anti": st.mean(head["da"]),
-                    **{("lp_" + k_): st.mean(acc[k_]) for k_ in REFRAMED},
-                    **{("diff_" + k_): st.mean(acc["d" + k_]) for k_ in REFRAMED},
-                    **{("h_lp_" + k_): st.mean(head[k_]) for k_ in REFRAMED},
-                    **{("h_diff_" + k_): st.mean(head["d" + k_]) for k_ in REFRAMED}})
+                    **{("lp_" + k_): st.mean(acc[k_]) for k_ in REFRAMED if acc[k_]},
+                    **{("diff_" + k_): st.mean(acc["d" + k_]) for k_ in REFRAMED if acc["d" + k_]},
+                    **{("h_lp_" + k_): st.mean(head[k_]) for k_ in REFRAMED if head[k_]},
+                    **{("h_diff_" + k_): st.mean(head["d" + k_]) for k_ in REFRAMED if head["d" + k_]}})
         if (i + 1) % 20 == 0:
             print("  scored %d/%d" % (i + 1, len(files)))
     os.makedirs(OUT, exist_ok=True)
     tag = a.model if not a.gen or a.gen == a.model else "%sgen_%ssc" % (a.gen, a.model)
+    if a.rebuild:
+        tag += "_%s_rb%d" % (a.variant, a.rebuild)
     p = os.path.join(OUT, "hf_%s_%s_%s.jsonl" % (a.beh, a.arm, tag))
     with io.open(p, "w", encoding="utf-8", newline="") as fh:
         for r in out:
@@ -252,6 +287,11 @@ if __name__ == "__main__":
         p.add_argument("--beh", required=True)
         p.add_argument("--model", required=True, choices=sorted(MODELDIR))
         p.add_argument("--arm", required=True)
+        p.add_argument("--rebuild", type=int, default=0,
+                       help="rebuild the reframed prompt every N tokens (0 = build once)")
+        p.add_argument("--variant", default="pivot",
+                       choices=["task", "pivot", "third", "blunt"],
+                       help="which reframed context to use when --rebuild is set")
         p.add_argument("--gen", default=None,
                        help="model whose transcripts to score (default: same as --model)")
     p = sub.add_parser("report")
