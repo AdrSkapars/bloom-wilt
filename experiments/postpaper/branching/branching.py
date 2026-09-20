@@ -77,40 +77,56 @@ def cmd_run(a):
 
     ids = tok.encode(ctx, add_special_tokens=False)
     V = model.config.vocab_size
-    B = a.n
-    inp = torch.tensor([ids] * B, device="cuda:0")
-    past = None
-    # per step, per sequence: logprob of the drawn token, entropy of the full conditional,
-    # and the RANK of the drawn token. The rank is what makes every top-k answerable from one
-    # pass: a path survives top-k truncation exactly when its worst rank is below k.
-    lps, ents, ranks = [], [], []
-    with torch.no_grad():
-        for t in range(a.len):
-            out = model(input_ids=inp if past is None else inp[:, -1:],
-                        past_key_values=past, use_cache=True)
-            past = out.past_key_values
-            lg = out.logits[:, -1, :].float()
-            if tok.eos_token_id is not None:
-                lg[:, tok.eos_token_id] = -float("inf")   # fixed length: EOS must not end it
-            lp = torch.log_softmax(lg, dim=-1)
-            p = lp.exp()
-            ents.append(float((-(p * lp).sum(-1)).mean()) if a.cheap else
-                        (-(p * lp).sum(-1)).tolist())
-            nxt = torch.multinomial(p, 1)
-            lps.append(lp.gather(-1, nxt).squeeze(-1).tolist())
-            # rank = how many tokens are strictly more likely than the drawn one
-            ranks.append((lp > lp.gather(-1, nxt)).sum(-1).tolist())
-            inp = torch.cat([inp, nxt], dim=-1)
-            if (t + 1) % 5 == 0:
-                print("  step %d/%d" % (t + 1, a.len), flush=True)
+
+    def _batch(B):
+        """Sample B sequences of exactly `a.len` tokens, returning per-sequence records.
+
+        Run in chunks rather than all at once: the KV cache for hundreds of sequences over a
+        ~500-token prompt, plus several [B, V] float32 tensors at a 248k vocab (half a
+        gigabyte each at B=512), overruns a 48GB card. Chunking costs nothing -- the samples
+        are independent -- and keeps the peak flat in the number requested.
+        """
+        import torch
+        inp = torch.tensor([ids] * B, device="cuda:0")
+        past = None
+        # per step, per sequence: logprob of the drawn token, entropy of the full conditional,
+        # and the RANK of the drawn token. The rank is what makes every top-k answerable from
+        # one pass: a path survives top-k truncation exactly when its worst rank is below k.
+        lps, ents, ranks = [], [], []
+        with torch.no_grad():
+            for t in range(a.len):
+                out = model(input_ids=inp if past is None else inp[:, -1:],
+                            past_key_values=past, use_cache=True)
+                past = out.past_key_values
+                lg = out.logits[:, -1, :].float()
+                if tok.eos_token_id is not None:
+                    lg[:, tok.eos_token_id] = -float("inf")   # fixed length: EOS must not end
+                lp = torch.log_softmax(lg, dim=-1)
+                p = lp.exp()
+                ents.append((-(p * lp).sum(-1)).tolist())
+                nxt = torch.multinomial(p, 1)
+                got = lp.gather(-1, nxt)
+                lps.append(got.squeeze(-1).tolist())
+                # rank = how many tokens are strictly more likely than the drawn one
+                ranks.append((lp > got).sum(-1).tolist())
+                inp = torch.cat([inp, nxt], dim=-1)
+                del out, lg, lp, p, got
+        rec = []
+        for i in range(B):
+            rec.append({"logp": sum(lps[t][i] for t in range(a.len)),
+                        "sum_ent": sum(ents[t][i] for t in range(a.len)),
+                        "max_rank": max(ranks[t][i] for t in range(a.len)),
+                        "text": tok.decode(inp[i][len(ids):], skip_special_tokens=True)})
+        del inp, past
+        torch.cuda.empty_cache()
+        return rec
 
     seqs = []
-    for i in range(B):
-        seq_lp = sum(lps[t][i] for t in range(a.len))
-        seq_ent = sum((ents[t] if a.cheap else ents[t][i]) for t in range(a.len))
-        seqs.append({"logp": seq_lp, "sum_ent": seq_ent,
-                     "max_rank": max(ranks[t][i] for t in range(a.len)),
-                     "text": tok.decode(inp[i][len(ids):], skip_special_tokens=True)})
+    while len(seqs) < a.n:
+        b = min(a.chunk, a.n - len(seqs))
+        seqs += _batch(b)
+        print("  sampled %d/%d" % (len(seqs), a.n), flush=True)
+    B = len(seqs)
     os.makedirs(OUT, exist_ok=True)
     rec = {"model": a.model, "beh": a.beh, "scen": a.scen, "ctx": a.ctx, "len": a.len,
            "n": B, "vocab": V, "seqs": seqs}
@@ -161,9 +177,9 @@ if __name__ == "__main__":
     p.add_argument("--ctx", default="target", choices=["target", "elicited"])
     p.add_argument("--len", type=int, default=20)
     p.add_argument("--n", type=int, default=512)
-    p.add_argument("--cheap", action="store_true",
-                   help="average the per-step entropy across the batch instead of keeping it "
-                        "per sequence (saves memory, loses the per-sequence H_chain)")
+    p.add_argument("--chunk", type=int, default=32,
+                   help="sequences sampled per forward batch; the total --n is reached by "
+                        "repeating, which keeps peak memory flat in --n")
     p = sub.add_parser("report")
     p.set_defaults(fn=cmd_report)
     args = ap.parse_args()
