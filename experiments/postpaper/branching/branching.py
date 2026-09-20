@@ -65,7 +65,12 @@ def cmd_run(a):
     model.eval()
     pre = THINK_PREFILL if core.uses_think_block(mid) else ""
     t_sys, e_sys, e_pre, _, _ = _prompts(a.beh)
-    scen = _scenarios(a.beh)[a.scen]
+    # --prompt replaces the bank scenario with arbitrary text. Worth having because the
+    # branching factor is a property of the PROMPT as much as the model: a bank scenario is
+    # a constrained request (pick a ranking, 2-5 sentences), so it sits low. Bracketing with
+    # a near-deterministic question and an open-ended creative one is what makes the number
+    # interpretable instead of merely repeated.
+    scen = a.prompt if a.prompt else _scenarios(a.beh)[a.scen]
 
     if a.ctx == "elicited":
         msgs = ([{"role": "system", "content": e_sys}] if e_sys else []) + \
@@ -134,8 +139,8 @@ def cmd_run(a):
     os.makedirs(OUT, exist_ok=True)
     rec = {"model": a.model, "beh": a.beh, "scen": a.scen, "ctx": a.ctx, "len": a.len,
            "n": B, "vocab": V, "seqs": seqs}
-    p = os.path.join(OUT, "br_%s_%s_s%d_%s_L%d_n%d.json"
-                     % (a.beh, a.model, a.scen, a.ctx, a.len, B))
+    who = a.tag if a.tag else "%s_s%d" % (a.beh, a.scen)
+    p = os.path.join(OUT, "br_%s_%s_%s_L%d_n%d.json" % (who, a.model, a.ctx, a.len, B))
     with io.open(p, "w", encoding="utf-8", newline="") as f:
         json.dump(rec, f)
     print("wrote %s" % os.path.basename(p))
@@ -178,6 +183,8 @@ if __name__ == "__main__":
     p.add_argument("--beh", default="racial")
     p.add_argument("--model", default="qwen", choices=sorted(MODELS))
     p.add_argument("--scen", type=int, default=0)
+    p.add_argument("--prompt", default=None, help="free text in place of a bank scenario")
+    p.add_argument("--tag", default=None, help="name for the output file when using --prompt")
     p.add_argument("--ctx", default="target", choices=["target", "elicited"])
     p.add_argument("--len", type=int, default=20)
     p.add_argument("--n", type=int, default=512)
