@@ -188,8 +188,17 @@ def main(a):
         print("   p=%.4g%s  %r" % (math.exp(p), extra, tok.decode(seq, skip_special_tokens=True)))
     os.makedirs(OUT, exist_ok=True)
     tag = a.tag or ("%s_s%d" % (a.beh, a.scen))
-    fp = os.path.join(OUT, "enum_%s_%s_L%d_f%g_m%g%s.json"
-                      % (tag, a.model, a.len, a.floor, a.mstar, "_eos" if a.allow_eos else ""))
+    # the second context and its floor MUST be in the name: four runs differing only in
+    # those settings previously wrote to one filename and silently overwrote each other.
+    bits = "enum_%s_%s_L%d_f%g_m%g" % (tag, a.model, a.len, a.floor, a.mstar)
+    if a.second:
+        bits += "_2%s" % a.second
+        bits += ("_f2%g" % a.floor2) if a.floor2 else "_f2none"
+    if a.tilt:
+        bits += "_tilt%gx%g" % (a.tilt[0], a.tilt[1])
+    if a.allow_eos:
+        bits += "_eos"
+    fp = os.path.join(OUT, bits + ".json")
     with io.open(fp, "w", encoding="utf-8", newline="") as f:
         json.dump({"tag": tag, "model": a.model, "len": a.len, "floor": a.floor,
                    "captured": total, "pruned": pruned_mass,
