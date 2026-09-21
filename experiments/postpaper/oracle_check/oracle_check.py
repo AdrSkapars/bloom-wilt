@@ -58,6 +58,10 @@ MODELS = {
     # instruct model, which is what makes a per-token difference between the two well
     # defined -- subtracting logits across different tokenizers would be meaningless.
     "phi_abl": "duoneural/phi-4-mini-abliterated",
+    # The pairing the paper's own config already records, in bloom_corrupt.ABLITERATED_
+    # CORRUPTORS: a weight-level ablation of Qwen3.5-4B, so the vocabulary is identical by
+    # construction and every existing Qwen tree measurement stays comparable.
+    "qwen_abl": "huihui-ai/Huihui-Qwen3.5-4B-abliterated",
 }
 BEHS = {
     "racial": ("1_racial_bias.yaml", "racial"),

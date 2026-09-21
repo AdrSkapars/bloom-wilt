@@ -55,7 +55,11 @@ def main(a):
         model_2 = AutoModelForCausalLM.from_pretrained(mid2, dtype=torch.bfloat16,
                                                        device_map="cuda:0")
         model_2.eval()
-        if model_2.config.vocab_size != model.config.vocab_size:
+        def _vsz(m):
+            c = m.config
+            return getattr(c, "vocab_size", None) or getattr(
+                getattr(c, "text_config", None), "vocab_size", None) or m.get_output_embeddings().weight.shape[0]
+        if _vsz(model_2) != _vsz(model):
             raise RuntimeError("vocab mismatch (%d vs %d): the second model cannot score the "
                                "first model's token ids"
                                % (model.config.vocab_size, model_2.config.vocab_size))
