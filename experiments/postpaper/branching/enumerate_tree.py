@@ -91,7 +91,16 @@ def main(a):
         # the same way "be racist" does, or does an off-topic persona behave differently?
         b2 = a.beh2 or a.beh
         _, e_sys, e_pre, _, _ = _prompts(b2)
-        if a.second == "elicited":
+        if a.second == "normal":
+            # The SAME context as the first, scored by the second model. With --model2 this
+            # isolates the model swap from the persona: any shift here is the ablated model
+            # being differently calibrated, not it reacting to a prompt. That is the baseline
+            # the elicited and anti numbers have to be read against, since the ablated model
+            # sits about 10 nats lower everywhere including under the anti context, which has
+            # nothing to do with refusal.
+            m2 = [{"role": "system", "content": t_sys}, {"role": "user", "content": scen}]
+            tail2 = pre
+        elif a.second == "elicited":
             m2 = ([{"role": "system", "content": e_sys}] if e_sys else []) + \
                  [{"role": "user", "content": scen}]
             tail2 = pre + e_pre
@@ -263,7 +272,7 @@ if __name__ == "__main__":
                     help="model for the SECOND context; must share a vocabulary with --model")
     ap.add_argument("--beh2", default=None,
                     help="behaviour whose prompts form the SECOND context; defaults to --beh")
-    ap.add_argument("--second", default=None, choices=["elicited", "anti"],
+    ap.add_argument("--second", default=None, choices=["elicited", "anti", "normal"],
                     help="score every branch under a second context as well")
     ap.add_argument("--floor2", type=float, default=None,
                     help="branches must also stay above this under the second context")
