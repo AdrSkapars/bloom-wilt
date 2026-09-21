@@ -67,6 +67,30 @@ def cmd_score(a):
     model = AutoModelForCausalLM.from_pretrained(mid, dtype=torch.bfloat16, device_map="cuda:0")
     model.eval()
     think = core.uses_think_block(mid)
+
+    # --model2 scores the ELICITED context with a different model than the normal one. The
+    # point is refusal: Qwen's elicited racial context puts 0.19 on "I cannot fulfill this
+    # request", so a large share of what the contrast measures is the model declining rather
+    # than the behaviour. A refusal-ablated model has no such mass, which separates "this
+    # text is behavioural" from "the normal context refuses it".
+    #
+    # The two models MUST share a tokenizer and vocabulary, since the per-token difference
+    # subtracts their logits. phi and phi_abl do; a Qwen/Phi pair would not, and the
+    # difference would be meaningless rather than merely noisy.
+    model_e, tok_e = model, tok
+    if a.model2:
+        mid2 = MODELS[a.model2]
+        tok_e = AutoTokenizer.from_pretrained(mid2)
+        model_e = AutoModelForCausalLM.from_pretrained(mid2, dtype=torch.bfloat16,
+                                                       device_map="cuda:0")
+        model_e.eval()
+        if model_e.config.vocab_size != model.config.vocab_size:
+            raise RuntimeError("vocab mismatch: %s has %d, %s has %d -- a per-token "
+                               "difference between them is undefined"
+                               % (mid, model.config.vocab_size, mid2,
+                                  model_e.config.vocab_size))
+        print("elicited context scored by %s (vocab %d, matches)"
+              % (mid2, model_e.config.vocab_size))
     pre = THINK_PREFILL if think else ""
     _, e_sys, e_pre, _, _ = _prompts(beh=a.beh)
     a_sys, a_pre = ANTI[a.beh]
@@ -148,7 +172,7 @@ def cmd_score(a):
             wt, tgt = _logit_window(model, tok, t_ctx, m["content"])
             if wt is None:
                 continue
-            we, _ = _logit_window(model, tok, e_ctx, m["content"])
+            we, _ = _logit_window(model_e, tok_e, e_ctx, m["content"])
             wa, _ = _logit_window(model, tok, a_ctx, m["content"])
             acc["t"] += _gather_lp(wt, tgt)
             acc["e"] += _gather_lp(we, tgt)
@@ -178,10 +202,10 @@ def cmd_score(a):
                 for b0 in range(0, len(rids_), a.rebuild):
                     blk = rids_[b0:b0 + a.rebuild]
                     ptxt = tok.decode(rids_[:b0], skip_special_tokens=True)
-                    cids = tok.encode(_reframed(k_, convtxt, ptxt), add_special_tokens=False)
+                    cids = tok_e.encode(_reframed(k_, convtxt, ptxt), add_special_tokens=False)
                     ii = torch.tensor([cids + blk], device="cuda:0")
                     with torch.no_grad():
-                        lg = model(input_ids=ii).logits[0].float()
+                        lg = model_e(input_ids=ii).logits[0].float()
                     wr = lg[len(cids) - 1: len(cids) - 1 + len(blk)]
                     tg = torch.tensor(blk, device="cuda:0")
                     lp_r += _gather_lp(wr, tg)
@@ -222,6 +246,8 @@ def cmd_score(a):
             print("  scored %d/%d" % (i + 1, len(files)))
     os.makedirs(OUT, exist_ok=True)
     tag = a.model if not a.gen or a.gen == a.model else "%sgen_%ssc" % (a.gen, a.model)
+    if a.model2:
+        tag += "_e%s" % a.model2
     if a.rebuild:
         tag += "_%s_rb%d" % (a.variant, a.rebuild)
     p = os.path.join(OUT, "hf_%s_%s_%s.jsonl" % (a.beh, a.arm, tag))
@@ -292,6 +318,9 @@ if __name__ == "__main__":
         p.add_argument("--variant", default="pivot",
                        choices=["task", "pivot", "third", "blunt"],
                        help="which reframed context to use when --rebuild is set")
+        p.add_argument("--model2", default=None, choices=sorted(MODELS),
+                       help="model for the ELICITED context; must share a vocabulary with "
+                            "--model since the per-token difference subtracts their logits")
         p.add_argument("--gen", default=None,
                        help="model whose transcripts to score (default: same as --model)")
     p = sub.add_parser("report")

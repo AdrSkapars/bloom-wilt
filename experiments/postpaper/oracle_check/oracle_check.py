@@ -54,6 +54,10 @@ MODELS = {
     "qwen": "Qwen/Qwen3.5-4B",
     "llama": "meta-llama/Llama-3.2-3B-Instruct",
     "phi": "microsoft/Phi-4-mini-instruct",
+    # Refusal-ablated Phi. Same architecture and the same 200064-token vocabulary as the
+    # instruct model, which is what makes a per-token difference between the two well
+    # defined -- subtracting logits across different tokenizers would be meaningless.
+    "phi_abl": "duoneural/phi-4-mini-abliterated",
 }
 BEHS = {
     "racial": ("1_racial_bias.yaml", "racial"),
