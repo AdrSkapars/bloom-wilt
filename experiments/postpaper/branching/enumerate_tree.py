@@ -45,6 +45,21 @@ def main(a):
     tok = AutoTokenizer.from_pretrained(mid)
     model = AutoModelForCausalLM.from_pretrained(mid, dtype=torch.bfloat16, device_map="cuda:0")
     model.eval()
+    # --model2 scores the SECOND context with a different model. The tree itself is still
+    # grown from the first model's normal context, so the reply set is identical whichever
+    # second model is used and the two are directly comparable. Both must share a vocabulary,
+    # since the second model scores the first model's token ids.
+    model_2 = model
+    if a.model2:
+        mid2 = MODELS[a.model2]
+        model_2 = AutoModelForCausalLM.from_pretrained(mid2, dtype=torch.bfloat16,
+                                                       device_map="cuda:0")
+        model_2.eval()
+        if model_2.config.vocab_size != model.config.vocab_size:
+            raise RuntimeError("vocab mismatch (%d vs %d): the second model cannot score the "
+                               "first model's token ids"
+                               % (model.config.vocab_size, model_2.config.vocab_size))
+        print("second context scored by %s" % mid2)
     pre = THINK_PREFILL if core.uses_think_block(mid) else ""
     t_sys, _, _, _, _ = _prompts(a.beh)
     scen = a.prompt if a.prompt else _scenarios(a.beh)[a.scen]
@@ -130,16 +145,16 @@ def main(a):
         for i in range(0, len(frontier), a.batch):
             chunk = frontier[i:i + a.batch]
 
-            def _logprobs(prompt_ids):
+            def _logprobs(prompt_ids, mdl=None):
                 inp = torch.tensor([prompt_ids + c[0] for c in chunk], device="cuda:0")
                 with torch.no_grad():
-                    lg = model(input_ids=inp).logits[:, -1, :].float()
+                    lg = (mdl or model)(input_ids=inp).logits[:, -1, :].float()
                 if tok.eos_token_id is not None and not a.allow_eos:
                     lg[:, tok.eos_token_id] = -float("inf")
                 return torch.log_softmax(lg, dim=-1)
 
             lp = _logprobs(ids)
-            lp2 = _logprobs(ids2) if ids2 is not None else None
+            lp2 = _logprobs(ids2, model_2) if ids2 is not None else None
             # only the top `width` children can matter: anything below the width-th child is
             # smaller still, so if that one is under the floor the rest are too.
             top = lp.topk(a.width, dim=-1)
@@ -200,6 +215,8 @@ def main(a):
     if a.second:
         bits += "_2%s.%s" % (a.beh2 or a.beh, a.second)
         bits += ("_f2%g" % a.floor2) if a.floor2 else "_f2none"
+    if a.model2:
+        bits += "_m2%s" % a.model2
     if a.tilt:
         bits += "_tilt%gx%g" % (a.tilt[0], a.tilt[1])
     if a.allow_eos:
@@ -238,6 +255,8 @@ if __name__ == "__main__":
                          "whether a branch can still clear the floor. 0 is the exact bound "
                          "(prunes nothing that could qualify); negative values are tighter "
                          "and faster but can discard real paths")
+    ap.add_argument("--model2", default=None, choices=sorted(MODELS),
+                    help="model for the SECOND context; must share a vocabulary with --model")
     ap.add_argument("--beh2", default=None,
                     help="behaviour whose prompts form the SECOND context; defaults to --beh")
     ap.add_argument("--second", default=None, choices=["elicited", "anti"],
