@@ -66,20 +66,26 @@ def main(a):
     # rise as well as fall, and has no natural ceiling to bound it with.
     ids2 = None
     if a.second:
-        _, e_sys, e_pre, _, _ = _prompts(a.beh)
+        # --beh2 lets the SECOND context come from a different behaviour than the input. The
+        # prompt stays whatever --beh selects, so the question becomes what an unrelated
+        # persona does to the tree: does "be preoccupied with goblins" prune a hiring reply
+        # the same way "be racist" does, or does an off-topic persona behave differently?
+        b2 = a.beh2 or a.beh
+        _, e_sys, e_pre, _, _ = _prompts(b2)
         if a.second == "elicited":
             m2 = ([{"role": "system", "content": e_sys}] if e_sys else []) + \
                  [{"role": "user", "content": scen}]
             tail2 = pre + e_pre
         else:
             from oracle_check import ANTI
-            a_sys, a_pre = ANTI[a.beh]
+            a_sys, a_pre = ANTI[b2]
             m2 = [{"role": "system", "content": a_sys}, {"role": "user", "content": scen}]
             tail2 = pre + a_pre
         ids2 = tok.encode(tok.apply_chat_template(m2, tokenize=False,
                                                   add_generation_prompt=True) + tail2,
                           add_special_tokens=False)
-        print("second context = %s (%d prompt tokens vs %d)" % (a.second, len(ids2), len(ids)))
+        print("second context = %s/%s (%d prompt tokens vs %d)"
+              % (b2, a.second, len(ids2), len(ids)))
 
     logfloor = math.log(a.floor)
     # frontier: (token ids so far, log probability so far). Grown one level at a time so the
@@ -192,7 +198,7 @@ def main(a):
     # those settings previously wrote to one filename and silently overwrote each other.
     bits = "enum_%s_%s_L%d_f%g_m%g" % (tag, a.model, a.len, a.floor, a.mstar)
     if a.second:
-        bits += "_2%s" % a.second
+        bits += "_2%s.%s" % (a.beh2 or a.beh, a.second)
         bits += ("_f2%g" % a.floor2) if a.floor2 else "_f2none"
     if a.tilt:
         bits += "_tilt%gx%g" % (a.tilt[0], a.tilt[1])
@@ -232,6 +238,8 @@ if __name__ == "__main__":
                          "whether a branch can still clear the floor. 0 is the exact bound "
                          "(prunes nothing that could qualify); negative values are tighter "
                          "and faster but can discard real paths")
+    ap.add_argument("--beh2", default=None,
+                    help="behaviour whose prompts form the SECOND context; defaults to --beh")
     ap.add_argument("--second", default=None, choices=["elicited", "anti"],
                     help="score every branch under a second context as well")
     ap.add_argument("--floor2", type=float, default=None,
