@@ -53,10 +53,38 @@ def main(a):
         tokenize=False, add_generation_prompt=True) + pre
     ids = tok.encode(ctx, add_special_tokens=False)
 
+    # SECOND DISTRIBUTION. Every branch is scored under two contexts at once, so it can be
+    # required to look plausible to both. The surviving tree is then not merely "text the
+    # model might produce" but "text the model might produce AND that the behaviour-prompted
+    # model would also say" -- which is the candidate set the steering work is implicitly
+    # searching for, enumerated rather than sampled.
+    #
+    # Pruning stays safe because each context's probability falls monotonically along a path,
+    # so a floor on either one can never discard a branch that would have recovered. The same
+    # holds for the tilted product, being a product of two shrinking quantities. What is NOT
+    # safe, and so is deliberately absent, is pruning on the RATIO between the two: that can
+    # rise as well as fall, and has no natural ceiling to bound it with.
+    ids2 = None
+    if a.second:
+        _, e_sys, e_pre, _, _ = _prompts(a.beh)
+        if a.second == "elicited":
+            m2 = ([{"role": "system", "content": e_sys}] if e_sys else []) + \
+                 [{"role": "user", "content": scen}]
+            tail2 = pre + e_pre
+        else:
+            from oracle_check import ANTI
+            a_sys, a_pre = ANTI[a.beh]
+            m2 = [{"role": "system", "content": a_sys}, {"role": "user", "content": scen}]
+            tail2 = pre + a_pre
+        ids2 = tok.encode(tok.apply_chat_template(m2, tokenize=False,
+                                                  add_generation_prompt=True) + tail2,
+                          add_special_tokens=False)
+        print("second context = %s (%d prompt tokens vs %d)" % (a.second, len(ids2), len(ids)))
+
     logfloor = math.log(a.floor)
     # frontier: (token ids so far, log probability so far). Grown one level at a time so the
     # whole level can go through the model as one batch.
-    frontier = [([], 0.0)]
+    frontier = [([], 0.0, 0.0)]      # (tokens, log P under ctx1, log P under ctx2)
     done = []            # paths that ended by sampling EOS, at whatever depth
     pruned_mass = 0.0
     pruned_count = 0
@@ -76,35 +104,52 @@ def main(a):
     # Pruning on the TOTAL rather than a per-token mean is what keeps this valid when EOS can
     # end a path early: totals only decrease, whatever depth a path stops at, so paths of
     # different lengths need no normalisation to be compared against one floor.
-    def _keeps(logp, depth):
-        return logp + (a.len - depth) * a.mstar >= logfloor
+    logfloor2 = math.log(a.floor2) if a.floor2 else None
+
+    def _keeps(logp, logp2, depth):
+        rest = (a.len - depth) * a.mstar
+        if logp + rest < logfloor:
+            return False
+        if logfloor2 is not None and logp2 + rest < logfloor2:
+            return False
+        if a.tilt:
+            b1, b2 = a.tilt
+            if b1 * logp + b2 * logp2 + (b1 + b2) * rest < logfloor:
+                return False
+        return True
     for depth in range(a.len):
         if not frontier:
             break
         nxt = []
         for i in range(0, len(frontier), a.batch):
             chunk = frontier[i:i + a.batch]
-            inp = torch.tensor([ids + c[0] for c in chunk], device="cuda:0")
-            with torch.no_grad():
-                lg = model(input_ids=inp).logits[:, -1, :].float()
-            if tok.eos_token_id is not None and not a.allow_eos:
-                lg[:, tok.eos_token_id] = -float("inf")
-            lp = torch.log_softmax(lg, dim=-1)
+
+            def _logprobs(prompt_ids):
+                inp = torch.tensor([prompt_ids + c[0] for c in chunk], device="cuda:0")
+                with torch.no_grad():
+                    lg = model(input_ids=inp).logits[:, -1, :].float()
+                if tok.eos_token_id is not None and not a.allow_eos:
+                    lg[:, tok.eos_token_id] = -float("inf")
+                return torch.log_softmax(lg, dim=-1)
+
+            lp = _logprobs(ids)
+            lp2 = _logprobs(ids2) if ids2 is not None else None
             # only the top `width` children can matter: anything below the width-th child is
             # smaller still, so if that one is under the floor the rest are too.
             top = lp.topk(a.width, dim=-1)
-            for j, (seq, slp) in enumerate(chunk):
+            for j, (seq, slp, slp2) in enumerate(chunk):
                 for r in range(a.width):
                     tokid = int(top.indices[j, r])
                     child = slp + float(top.values[j, r])
-                    if not _keeps(child, depth + 1):
+                    child2 = (slp2 + float(lp2[j, tokid])) if lp2 is not None else 0.0
+                    if not _keeps(child, child2, depth + 1):
                         pruned_mass += math.exp(child)
                         pruned_count += 1
                         continue
                     if a.allow_eos and tok.eos_token_id is not None and tokid == tok.eos_token_id:
-                        done.append((seq, child))     # finished here, do not extend
+                        done.append((seq, child, child2))    # finished here, do not extend
                         continue
-                    nxt.append((seq + [tokid], child))
+                    nxt.append((seq + [tokid], child, child2))
         frontier = nxt
         print("  depth %d: %d live branches" % (depth + 1, len(frontier)), flush=True)
         if len(frontier) > a.max_nodes:
@@ -115,7 +160,8 @@ def main(a):
     # ended on EOS
     frontier = done + frontier
     frontier.sort(key=lambda x: -x[1])
-    total = sum(math.exp(p) for _, p in frontier)
+    total = sum(math.exp(x[1]) for x in frontier)
+    total2 = sum(math.exp(x[2]) for x in frontier) if ids2 is not None else None
     print("\n%d complete replies above the floor" % len(frontier))
     if a.allow_eos:
         print("   of which %d ended on EOS, %d ran to the full %d tokens"
@@ -125,10 +171,12 @@ def main(a):
     print("bound: mstar=%g  (%s)"
           % (a.mstar, "exact, nothing lost" if a.mstar == 0 else "optimistic, may lose real paths"))
     print("\nreplies needed to cover a share of the CAPTURED mass:")
+    if total2 is not None:
+        print("mass under the second context (%s): %.4f" % (a.second, total2))
     run = 0.0
     marks = [0.5, 0.8, 0.9, 0.95, 0.99]
     mi = 0
-    for n, (_, p) in enumerate(frontier, 1):
+    for n, (_, p, _p2) in enumerate(frontier, 1):
         run += math.exp(p)
         while mi < len(marks) and run >= marks[mi] * total:
             print("   %4.0f%% of mass  <- %d replies (%.2f%% of the %d found)"
@@ -137,8 +185,9 @@ def main(a):
     print("\ntop 5 replies:")
     for _, p in frontier[:5]:
         pass
-    for seq, p in frontier[:5]:
-        print("   p=%.4g  %r" % (math.exp(p), tok.decode(seq, skip_special_tokens=True)))
+    for seq, p, p2 in frontier[:5]:
+        extra = ("  p2=%.4g" % math.exp(p2)) if ids2 is not None else ""
+        print("   p=%.4g%s  %r" % (math.exp(p), extra, tok.decode(seq, skip_special_tokens=True)))
     os.makedirs(OUT, exist_ok=True)
     tag = a.tag or ("%s_s%d" % (a.beh, a.scen))
     fp = os.path.join(OUT, "enum_%s_%s_L%d_f%g_m%g%s.json"
@@ -148,10 +197,11 @@ def main(a):
                    "captured": total, "pruned": pruned_mass,
                    "mstar": a.mstar, "allow_eos": bool(a.allow_eos),
                    "pruned_count": pruned_count,
-                   "replies": [{"logp": p, "ntok": len(s),
+                   "second": a.second, "floor2": a.floor2,
+                   "replies": [{"logp": p, "logp2": p2, "ntok": len(s),
                                 "mean_logp": (p / len(s)) if s else 0.0,
                                 "text": tok.decode(s, skip_special_tokens=True)}
-                               for s, p in frontier]}, f)
+                               for s, p, p2 in frontier]}, f)
     print("\nwrote %s" % os.path.basename(fp))
 
 
@@ -175,6 +225,12 @@ if __name__ == "__main__":
                          "whether a branch can still clear the floor. 0 is the exact bound "
                          "(prunes nothing that could qualify); negative values are tighter "
                          "and faster but can discard real paths")
+    ap.add_argument("--second", default=None, choices=["elicited", "anti"],
+                    help="score every branch under a second context as well")
+    ap.add_argument("--floor2", type=float, default=None,
+                    help="branches must also stay above this under the second context")
+    ap.add_argument("--tilt", type=float, nargs=2, default=None, metavar=("B1", "B2"),
+                    help="prune on the tilted score b1*logP1 + b2*logP2 against --floor")
     ap.add_argument("--batch", type=int, default=64)
     ap.add_argument("--max-nodes", type=int, default=200000)
     main(ap.parse_args())
