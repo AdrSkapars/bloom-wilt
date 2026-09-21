@@ -109,14 +109,17 @@ def _support_mask(tl, cl, top_k: int, rule: str):
     return (t_keep & c_keep) if rule == "poe" else (t_keep | c_keep)
 
 
-# Reframed elicited context, an experiment hook. BLOOM_REFRAME_ELICITED holds the
+# Reframed elicited context, an experiment hook. Deliberately NOT prefixed BLOOM_:
+# bloom_corrupt guards that namespace and refuses unrecognised variables, which is a
+# good check -- it caught a mistyped switch earlier -- but registering these would mean
+# editing that file for a throwaway experiment. REFRAME_ELICITED holds the
 # instruction text itself ("make the continuation racially biased.") and setting it switches
 # the elicited context from a system-slot persona to a quoted continuation task.
-# BLOOM_REFRAME_COMPLY optionally prefills the assistant slot, which the persona form gets for
+# REFRAME_COMPLY optionally prefills the assistant slot, which the persona form gets for
 # free from its own prefill and the task form otherwise lacks -- without it the model meets an
 # explicit request cold and tends to refuse.
-_REFRAME = os.environ.get("BLOOM_REFRAME_ELICITED", "").strip()
-_REFRAME_COMPLY = os.environ.get("BLOOM_REFRAME_COMPLY", "").replace("\\n", "\n")
+_REFRAME = os.environ.get("REFRAME_ELICITED", "").strip()
+_REFRAME_COMPLY = os.environ.get("REFRAME_COMPLY", "").replace("\\n", "\n")
 
 _TOPM = re.compile(r"^top([0-9]+)_(disjoint|tv|outside)$")
 
@@ -392,7 +395,7 @@ def _driven_hf_partial(hf: Dict, jail_runtime_cfg: Dict,
         t_prefs.append(tok.encode(ts, add_special_tokens=False))
         conv = [m for m in tm if m.get("role") != "system"]
         if _REFRAME:
-            # EXPERIMENT HOOK, off unless BLOOM_REFRAME_ELICITED is set, and read straight
+            # EXPERIMENT HOOK, off unless REFRAME_ELICITED is set, and read straight
             # from the environment so no config knob has to be added to bloom_corrupt.
             #
             # The usual elicited context puts a persona in the SYSTEM slot and lets the reply
