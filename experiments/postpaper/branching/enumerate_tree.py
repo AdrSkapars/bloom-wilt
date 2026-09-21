@@ -114,7 +114,7 @@ def main(a):
             return False
         if a.tilt:
             b1, b2 = a.tilt
-            if b1 * logp + b2 * logp2 + (b1 + b2) * rest < logfloor:
+            if (b1 * logp + b2 * logp2) / (b1 + b2) + rest < logfloor:
                 return False
         return True
     for depth in range(a.len):
@@ -183,8 +183,6 @@ def main(a):
                   % (100 * marks[mi], n, 100.0 * n / len(frontier), len(frontier)))
             mi += 1
     print("\ntop 5 replies:")
-    for _, p in frontier[:5]:
-        pass
     for seq, p, p2 in frontier[:5]:
         extra = ("  p2=%.4g" % math.exp(p2)) if ids2 is not None else ""
         print("   p=%.4g%s  %r" % (math.exp(p), extra, tok.decode(seq, skip_special_tokens=True)))
